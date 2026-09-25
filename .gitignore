@@ -1,0 +1,25 @@
+# Dependencies and environments
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Build output
+dist/
+build/
+
+# Local environment and logs
+.env
+.env.*
+!.env.example
+*.log
+
+# Per-machine Claude Code settings
+.claude/settings.local.json
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

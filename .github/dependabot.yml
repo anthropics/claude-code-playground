@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # Keeps the pinned GitHub Actions (such as the CLA Assistant) up to date.
+  # Entries are self-contained; an entry that ships a package manifest adds its
+  # own block here with the entry's directory.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
