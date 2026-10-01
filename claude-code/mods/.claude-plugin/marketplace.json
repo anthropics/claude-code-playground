@@ -1,0 +1,26 @@
+{
+  "name": "claude-code-playground-mods",
+  "owner": {
+    "name": "Claude Code DevRel"
+  },
+  "metadata": {
+    "description": "Example mods from claude-code-playground. Shared as-is."
+  },
+  "plugins": [
+    {
+      "name": "blast-radius",
+      "source": "./blast-radius",
+      "description": "Holds risky shell commands and shows what they would change, with Proceed and Cancel buttons."
+    },
+    {
+      "name": "replay-theater",
+      "source": "./replay-theater",
+      "description": "Step through the file edits Claude made in the last turn, one diff at a time."
+    },
+    {
+      "name": "token-weather",
+      "source": "./token-weather",
+      "description": "A live forecast of the context window, drawn above the prompt."
+    }
+  ]
+}
