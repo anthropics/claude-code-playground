@@ -26,6 +26,7 @@ A collection of things the DevRel team is excited to share:
 | [`claude-code/claude-md/`](claude-code/claude-md/) | Real `CLAUDE.md` files with commentary |
 | [`claude-code/settings/`](claude-code/settings/) | `settings.json` examples |
 | [`claude-code/workflows/`](claude-code/workflows/) | End-to-end personal setups, one folder per person or workflow |
+| [`claude-code/mods/`](claude-code/mods/) | Mods: plugins that change what Claude Code does or draw their own UI, one folder per mod |
 | [`skills/`](skills/) | Reusable skills that are not in the official marketplace |
 | [`demos/`](demos/) | Art-of-the-possible demos, each with how it was built |
 | [`launch-demos/`](launch-demos/) | Demos shown at model launches, with the exact prompt and setup |
