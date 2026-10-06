@@ -7,6 +7,8 @@
 // from $.session.usage() (the same figures the status line shows) and keep
 // the last HISTORY readings.
 // session.start: take a first reading, so the band shows before any turn.
+// session.end (/clear) and session.compact: the window was replaced and no
+// turn follows, so drop or keep the history and read the new window.
 // ui.render (AbovePrompt): one line: icon, forecast word, percent, tokens
 // used of the window, and a block-character chart of the recent turns.
 //
@@ -26,7 +28,12 @@ const FORECAST = [
   { upTo: Infinity, icon: "↯", word: "Compact soon", color: "red" },
 ];
 
-// Readings: { tokens, window, percent }, oldest first.
+// How long after a /clear or a compaction the new window is read, in ms.
+const SETTLE_MS = 500;
+
+// Readings: { tokens, window, percent, estimated }, oldest first. A window no
+// response has answered over yet (fresh, cleared, compacted) reports no
+// tokens; its reading is the engine's local estimate, marked `estimated`.
 let readings = [];
 
 export function register(on) {
@@ -46,6 +53,26 @@ export function register(on) {
     return result;
   });
 
+  // /clear ends the session and starts none: the old readings are of a
+  // conversation that is gone.
+  on("session.end", async ($, e, next) => {
+    const result = await next(e);
+    if (e.reason === "clear") {
+      readings = [];
+      $.ui.invalidate("ui.render");
+      $.clock.after(SETTLE_MS, () => takeReading($));
+    }
+    return result;
+  });
+
+  on("session.compact", async ($, e, next) => {
+    const result = await next(e);
+    if (e.trigger !== "precompute" && result && !result.skip) {
+      $.clock.after(SETTLE_MS, () => takeReading($));
+    }
+    return result;
+  });
+
   on("ui.render", { component: "AbovePrompt" }, ($, e, next) => {
     if (e.hasSurvey || readings.length === 0) {
       return next(e);
@@ -61,11 +88,18 @@ async function takeReading($) {
     if (!context || !context.window) {
       return;
     }
-    const tokens = context.tokens ?? 0;
-    const percent = Math.round(context.percent ?? (tokens / context.window) * 100);
-    // The session.start reading is 0 before any response; drop it once real readings arrive.
-    readings = readings.filter((r) => r.tokens > 0);
-    readings.push({ tokens, window: context.window, percent });
+    let tokens = context.tokens;
+    const estimated = tokens == null;
+    if (estimated) {
+      tokens = await estimateTokens($);
+      if (tokens == null) {
+        return;
+      }
+    }
+    const percent = Math.round(estimated ? (tokens / context.window) * 100 : (context.percent ?? (tokens / context.window) * 100));
+    // An estimate stands only until the next reading replaces it.
+    readings = readings.filter((r) => !r.estimated);
+    readings.push({ tokens, window: context.window, percent, estimated });
     if (readings.length > HISTORY) {
       readings = readings.slice(-HISTORY);
     }
@@ -75,14 +109,22 @@ async function takeReading($) {
   }
 }
 
+// What the window holds before any response has reported it: /context's own
+// local estimate (`summary` sends no token-count request).
+async function estimateTokens($) {
+  const { context } = await $.session.usage({ breakdown: "summary" });
+  return context?.breakdown?.totalTokens;
+}
+
 function band(Box, Text, columns) {
   const now = readings[readings.length - 1];
   const f = forecastFor(now.percent);
   const trend = trendWord();
+  const about = now.estimated ? "~" : "";
   const parts = [
     Text({ color: f.color, bold: true, children: `${f.icon}  ${f.word}` }),
-    Text({ children: `  ${now.percent}% of context` }),
-    Text({ dimColor: true, children: `  ${short(now.tokens)} / ${short(now.window)}` }),
+    Text({ children: `  ${about}${now.percent}% of context` }),
+    Text({ dimColor: true, children: `  ${about}${short(now.tokens)} / ${short(now.window)}` }),
   ];
   if (columns >= 60) {
     parts.push(Text({ dimColor: true, children: "   last turns " }));

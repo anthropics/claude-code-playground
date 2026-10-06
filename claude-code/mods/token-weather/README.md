@@ -35,6 +35,8 @@ These are the same figures the status line shows (`total_input_tokens`, `context
 |------|--------------|
 | `session.start` | Takes a first reading, so the band shows before the first turn. |
 | `turn.complete` | Takes a reading after each main-loop turn. Subagent turns are skipped. |
+| `session.end` | On `/clear`, drops the old conversation's readings and reads the new window. |
+| `session.compact` | Reads the new window after a compaction. |
 | `ui.render` with `{component: "AbovePrompt"}` | Draws the band as one line. |
 
 ## Demo
@@ -113,10 +115,10 @@ No environment variables or configuration.
 - **The percentage is of the full window.** Claude Code's own "context used" notice counts against the auto-compact point, which is lower, so the two can differ. In testing, the band read 81% when the notice read 90%.
 - **The band updates once per turn**, not during a turn.
 - **The chart's bars are relative** to the fullest turn shown, so growth shows even at low fill. The percentage is the absolute figure.
-- **The history resets** when the session starts, or when the plugin reloads.
+- **The history resets** when the session starts, on `/clear`, or when the plugin reloads.
 - **On a 1M-token window**, ordinary work stays at ☀ for a long time. That's accurate.
 - **One band per session.** Another plugin that draws `AbovePrompt` competes for the same band.
-- **Before the first response**, the band reads 0%, because no response has reported usage yet.
+- **Before the first response**, and right after `/clear` or a compaction, no response has reported usage yet. The band then shows the engine's local estimate (the one `/context` prints), marked with `~`, until the next turn replaces it with the real figure.
 
 ## Dependencies
 
