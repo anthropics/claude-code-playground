@@ -5,8 +5,9 @@
 //
 // tool.call (Bash): if the command is risky, work out its blast radius, open a
 // pane with Proceed and Cancel, and hold the call until one is pressed.
-// ui.render (Pane): draws the report. If the surface won't place the pane (a
-// narrow terminal), the same report is drawn in the AbovePrompt band instead.
+// ui.render (Pane): draws the report. If the pane isn't on screen (a narrow
+// terminal, or a tab behind another mod's pane), the same report is drawn in
+// the AbovePrompt band instead.
 //
 // Holding: a hook has 10 s of its own time, but time spent inside a `$` call is
 // free. So the hold loop waits on a short `$.process.run(["sleep", ...])` until
@@ -41,7 +42,6 @@ export function register(on) {
     const mine = { command: String(e.command), risk, report: null, decision: null, where: "pane" };
     held = mine;
 
-    let opened = { isPlaced: false };
     let decision;
     let summary = risk.label;
     try {
@@ -54,10 +54,10 @@ export function register(on) {
         : await measure($, risk, cwd);
       summary = mine.report.summary;
 
-      opened = await $.ui.open({ id: PANE_ID, title: "Blast Radius", focus: true, rows: paneRows(mine.report) });
-      if (!opened.isPlaced) {
-        mine.where = "band";
-      }
+      await $.ui.open({ id: PANE_ID, title: "Blast Radius", focus: true, rows: paneRows(mine.report) });
+      // `isPlaced` alone isn't enough: beside another mod's pane this one can
+      // open as a tab behind it, placed but not shown.
+      await follow($, mine);
       $.ui.invalidate("ui.render");
 
       const startedAt = await $.clock.now();
@@ -71,17 +71,19 @@ export function register(on) {
           break;
         }
         await $.process.run(["sleep", POLL_SECONDS], { timeoutMs: 5000 });
+        // The pane can come into view, or go out of it, while the call is held.
+        await follow($, mine);
       }
     } catch {
       mine.decision = "error"; // anything unexpected refuses the command
     } finally {
       decision = mine.decision;
       // Close this call's pane before releasing the hold, so the next call's
-      // pane can't be the one that gets closed.
+      // pane can't be the one that gets closed. Always: a pane that waited
+      // undrawn at open may have been placed since. Closing an id that isn't
+      // open does nothing.
       try {
-        if (opened.isPlaced) {
-          await $.ui.close({ id: PANE_ID });
-        }
+        await $.ui.close({ id: PANE_ID });
       } catch {
         // the pane is already gone
       }
@@ -119,6 +121,21 @@ export function register(on) {
     }
     return draw($.ui.resolve(e), held);
   });
+}
+
+// ---- Pane or band ---------------------------------------------------------
+
+/**
+ * Draws the report in the pane while the pane is the one shown, else in the
+ * band, and redraws when that changes.
+ */
+export async function follow($, mine) {
+  const pane = (await $.ui.panes()).find((p) => p.id === PANE_ID);
+  const where = pane !== undefined && pane.isPlaced && pane.isShown ? "pane" : "band";
+  if (where !== mine.where) {
+    mine.where = where;
+    $.ui.invalidate("ui.render");
+  }
 }
 
 // ---- What counts as risky -------------------------------------------------
