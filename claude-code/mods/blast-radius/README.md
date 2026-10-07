@@ -21,7 +21,7 @@ Every other command runs as normal. If the command line moves first, with `cd di
 The patterns it demonstrates:
 
 - Holding a `tool.call` until the user answers, and returning `{ deny }` with a reason Claude can act on.
-- Drawing the same report in a `Pane`, or in the `AbovePrompt` band when the terminal is too narrow for a pane.
+- Drawing the same report in a `Pane`, or in the `AbovePrompt` band when the pane isn't on screen.
 - Measuring with `$.process.run`, passing paths as arguments so nothing in them runs as shell.
 
 ## Demo
@@ -56,7 +56,7 @@ The second try, after Proceed:
 - **Transcript:** not shared. The build ran in an internal workspace.
 - **Iterations:**
   - A hook has a 10-second budget for its own code, which is far too short to wait for a person. Time spent inside a `$` call doesn't count, so the hold is a loop that waits on `$.process.run(["sleep", "0.25"])` until a button's `onPress` sets the decision.
-  - A pane needs room. In a narrow terminal Claude Code doesn't place it, so the mod checks `isPlaced` and draws the report in the `AbovePrompt` band instead.
+  - A pane needs room. In a narrow terminal Claude Code doesn't place it, so the mod checks `isPlaced` and draws the report in the `AbovePrompt` band instead. A placed pane can still be out of view: beside another mod's pane it opens as a tab behind it. So while the call is held, the mod watches `$.ui.panes()` and draws in the band whenever its pane isn't the one shown.
   - Cancel has the focus when the pane opens, so pressing Enter refuses the command rather than running it.
   - An independent review before release found two problems in the measuring step, both fixed. A file named like a `find` action (for example `-delete`) that a glob matched could be read as an action while measuring, so relative paths now go to `find` with `./` in front. And a `cd` earlier on the command line was ignored, so the wrong folder was measured; the mod now follows `cd` and `git -C`. The same review led to smaller fixes: overlapping holds are queued, and the buttons always answer the command shown; an error while holding refuses the command; `git clean -e`, `src:dst` and `HEAD` force pushes are measured correctly; and sizes use `du -k`, which works on macOS as well as Linux.
   - Tested in Claude Code, before those fixes: `rm -rf build` was held for more than 30 seconds, Cancel kept the files and Proceed deleted them; `git reset --hard` listed the two changed files and Cancel kept them; `git clean -fdx` was held. Force pushes and migrations were checked against the command classifier only, not run. The fixes are covered by tests of the classifier, the measuring step and the hold queue, run with Node against a stand-in for Claude Code; they haven't been re-run in a live session.
@@ -115,7 +115,7 @@ No environment variables or configuration.
 - It reads the command text. It doesn't parse shell fully: `$(...)`, aliases, `eval`, `bash -c "..."`, `xargs rm`, `find -delete`, scripts that call `rm`, and wrappers such as `timeout 5 rm`, `doas rm`, `time -p rm` or `env -i rm` aren't caught.
 - Only the first risky part of a command line is measured, and the pane shows the command on one line, cut off if it's long. Proceed runs the whole line as written.
 - It follows `cd`, `pushd`, `popd` and `git -C` on the same line. `cd -`, and a folder that doesn't exist, can't be measured; the pane says so and still holds the command. Otherwise it starts from the session's working folder.
-- In a narrow terminal the report is drawn in the band above the prompt, which only one mod can use at a time. If another mod that draws there (such as Replay Theater or Token Weather in this folder) takes the band, the Proceed and Cancel buttons may not show, and the command is refused after 10 minutes. Use a wider terminal, or turn the other mod off, when you rely on Blast Radius.
+- In a narrow terminal, or when another mod's pane is in front, the report is drawn in the band above the prompt, which only one mod can use at a time. If another mod that draws there (such as Replay Theater or Token Weather in this folder) takes the band, the Proceed and Cancel buttons may not show, and the command is refused after 10 minutes. Use a wider terminal, or turn the other mod off, when you rely on Blast Radius.
 - One command is held at a time. A second risky call, from a subagent for example, waits until the first is answered.
 - It only watches the Bash tool. File edits and other tools aren't held.
 - The `rm` count is approximate: a path matched twice is counted twice, and a file name with a line break is not counted. The list shows the first 10 files. Counts come from `find` and sizes from `du -k`, so a size is the space on disk, to the nearest kilobyte. A very large tree can take a few seconds to measure.
