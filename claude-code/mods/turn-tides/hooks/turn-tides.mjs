@@ -21,7 +21,9 @@
 
 const ANSWER_CAP = 240;
 
-// Turns: { id, text, answer, at }, oldest first. A module variable like
+// Turns: { id, kind, text, answer, at }, oldest first — kind is 'ask' for a
+// question with its answer, 'command' for a `!`-passthrough shell command the
+// person ran (one bar of its own colour, no answer). A module variable like
 // token-weather's readings: a reload starts it over, and the next prompt's
 // lazy seed fills it back in.
 let turns = [];
@@ -45,13 +47,20 @@ export function register(on) {
     const result = await next(e);
     if (
       e.agentId === undefined &&
-      e.door === "prompt" &&
+      (e.door === "prompt" || e.door === "command") &&
       e.message.type === "user" &&
       e.message.isMeta !== true
     ) {
       const text = textOf(e.message.content);
-      if (isQuestionText(text) && !turns.some(turn => turn.id === e.uuid)) {
-        turns.push({ id: e.uuid, text, answer: "", at: Date.now() });
+      // a !-passthrough command arrives wrapped in <bash-input>; a slash
+      // command's echo in <command-name> stays out of the strip
+      const kind = text.startsWith("<bash-input>") ? "command" : "ask";
+      const body = kind === "command"
+        ? (/^<bash-input>([\s\S]*?)<\/bash-input>/.exec(text)?.[1] ?? "").trim()
+        : text;
+      if ((kind === "ask" && isQuestionText(text) && !turns.some(turn => turn.id === e.uuid)) ||
+          (kind === "command" && body !== "" && !turns.some(turn => turn.id === e.uuid))) {
+        turns.push({ id: e.uuid, kind, text: body, answer: "", at: Date.now() });
         $.ui.invalidate("ui.render");
       }
     }
@@ -65,7 +74,7 @@ export function register(on) {
     const result = await next(e);
     if (e.agentId === undefined && e.answer !== "") {
       const last = turns[turns.length - 1];
-      if (last && last.answer === "") {
+      if (last && last.kind === "ask" && last.answer === "") {
         last.answer = oneLine(e.answer, ANSWER_CAP);
         $.ui.invalidate("ui.render");
       }
@@ -93,13 +102,17 @@ export function register(on) {
             color: "black",
             children: [
               Text({ color: "black", bold: true, children: `#${i + 1}` }),
-              ` ${oneLine(q.text, room)}`,
+              ` ${q.kind === "command" ? "$ " : ""}${oneLine(q.text, room)}`,
             ],
           }),
           Text({
             color: "black",
             dimColor: true,
-            children: q.answer === "" ? "A: …" : `A: ${oneLine(q.answer, room)}`,
+            children: q.kind === "command"
+              ? "! local command"
+              : q.answer === ""
+                ? "A: …"
+                : `A: ${oneLine(q.answer, room)}`,
           }),
         ],
       }),
@@ -116,7 +129,7 @@ export function register(on) {
         ...scaled.bars.map((q, i) =>
           Box({
             key: `b:${q.id}`,
-            backgroundColor: "cyan",
+            backgroundColor: q.kind === "command" ? "magenta" : "cyan",
             hover: { scope: `q:${q.id}` },
             children: [
               Button({
@@ -199,11 +212,16 @@ async function seed($, transcriptPath) {
     if (row.type === "user" && row.isMeta !== true && row.isSidechain !== true) {
       const text = textOf(row.message?.content);
       if (isQuestionText(text)) {
-        found.push({ id: row.uuid, text, answer: "", at: Date.parse(row.timestamp ?? "") || 0 });
+        found.push({ id: row.uuid, kind: "ask", text, answer: "", at: Date.parse(row.timestamp ?? "") || 0 });
+        continue;
+      }
+      const command = /^<bash-input>([\s\S]*?)<\/bash-input>/.exec(text)?.[1]?.trim();
+      if (command) {
+        found.push({ id: row.uuid, kind: "command", text: command, answer: "", at: Date.parse(row.timestamp ?? "") || 0 });
         continue;
       }
     }
-    if (row.type === "assistant" && row.isSidechain !== true && found.length > 0) {
+    if (row.type === "assistant" && row.isSidechain !== true && found.length > 0 && found[found.length - 1].kind === "ask") {
       const text = oneLine(textOf(row.message?.content), ANSWER_CAP);
       if (text !== "") {
         found[found.length - 1].answer = text;
@@ -257,10 +275,10 @@ function scaleStrip(list, columns) {
 // longer the answer, the longer the bar; the running turn sits at a middle
 // width until its answer lands
 function barWidth(q) {
-  const len = q.answer.length;
-  if (len === 0) return 3;
-  if (len <= 40) return 2;
-  if (len <= 120) return 3;
-  if (len <= 240) return 4;
+  if (q.kind === "command") return 1;
+  const len = q.text.length + q.answer.length;
+  if (len <= 80) return 2;
+  if (len <= 200) return 3;
+  if (len <= 400) return 4;
   return 5;
 }
