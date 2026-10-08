@@ -11,15 +11,9 @@ The tides of a session's turns, drawn above the prompt: one bar per turn, its wi
 
 ## Demo
 
-```
-                         ┌ hover unfolds the turn's summary ──────────┐
- #3 can it run inside herdr?
- A: yes — the core path holds there; only mouse pass-through is untested
-≋  12 tides  ▄▄ ▄▄▄▄ ▄▄ ▄▄▄▄▄▄▄ ▄▄▄ ▄▄▄▄        ← one bar per turn
-❯ _
-```
+![A hover unfolding one turn's summary above the strip of turn bars](screenshots/demo.png)
 
-An animated capture is on the todo list; the strip is one line above the prompt, always on.
+The strip is one line above the prompt, always on; hovering a bar unfolds that turn's summary above it.
 
 ## How it was built
 
