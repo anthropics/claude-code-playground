@@ -47,9 +47,9 @@ export function register(on) {
     const result = await next(e);
     if (!seededThisCopy) {
       seededThisCopy = true;
-      await seed($, e.transcript_path);
+      await seed($, e.transcript_path, true);
     } else if (turns.length === 0) {
-      await seed($, e.transcript_path);
+      await seed($, e.transcript_path, true);
     }
     return result;
   });
@@ -209,7 +209,9 @@ function textOf(content) {
 // $.ui.scroll takes, so the seeded file and the live appends join on it.
 // The assistant rows that follow a question become its answer summary: each
 // one overwrites the last, so the row nearest the next question wins.
-async function seed($, transcriptPath) {
+// merge: a tail-windowed re-seed refreshes what the window covers and keeps
+// the turns before it; a session start still replaces wholesale
+async function seed($, transcriptPath, merge = false) {
   if (transcriptPath === "") {
     return;
   }
@@ -251,7 +253,15 @@ async function seed($, transcriptPath) {
       }
     }
   }
-  turns = found;
+  if (!merge) {
+    turns = found;
+  } else {
+    const byId = new Map(turns.map(q => [q.id, q]));
+    for (const q of found) {
+      byId.set(q.id, q);
+    }
+    turns = [...byId.values()].sort((a, b) => a.at - b.at);
+  }
   $.ui.invalidate("ui.render");
 }
 
@@ -262,7 +272,7 @@ async function readTranscript($, path) {
   if (whole !== undefined) {
     return whole;
   }
-  const tail = await $.process.run(["tail", "-c", "1048576", path]).catch(() => undefined);
+  const tail = await $.process.run(["tail", "-c", "4194304", path]).catch(() => undefined);
   return tail === undefined || tail.exitCode !== 0 ? undefined : tail.stdout;
 }
 
