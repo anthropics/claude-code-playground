@@ -336,7 +336,13 @@ async function measureRm($, risk, cwd) {
   }
   const run = await $.process.run(["bash", "-c", RM_SCRIPT, "blast-radius", ...risk.targets], { cwd, timeoutMs: 15000 });
   const [head, ...rest] = run.stdout.split("\n").filter((l) => l !== "");
-  const [files, bytes, found] = (head ?? "0 0 0").split(" ").map(Number);
+  // The script exits 0 after printing "files bytes paths". Anything else means
+  // bash failed, so what rm would delete is unknown, not nothing.
+  const nums = (head ?? "").split(" ").map(Number);
+  if (run.exitCode !== 0 || nums.length !== 3 || !nums.every(Number.isFinite)) {
+    return { summary: `${risk.label} (could not measure it)`, lines: [], note: `Measuring failed (exit ${run.exitCode}), so what this would delete is unknown.` };
+  }
+  const [files, bytes, found] = nums;
   if (!found) {
     return { summary: `delete nothing: no file matches ${risk.targets.join(" ")}`, lines: [], note: "The paths don't exist, so rm has nothing to remove." };
   }
