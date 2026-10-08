@@ -7,6 +7,7 @@ Claude Code mods: plugins with a hooks module that can change what Claude Code d
 | [`blast-radius/`](blast-radius/) | Holds a risky shell command (`rm -rf`, `git reset --hard`, a force push, a migration) and shows what it would change, with Proceed and Cancel buttons. |
 | [`replay-theater/`](replay-theater/) | Lets you step through the file edits Claude made in the last turn, one diff at a time. |
 | [`token-weather/`](token-weather/) | Draws a live forecast of the context window above the prompt. |
+| [`turn-tides/`](turn-tides/) | Charts the session's turns above the prompt: one bar per turn, hover for its summary, click to jump back to that turn. |
 
 The mods need Claude Code 2.1.287 or later, where mods load by default.
 
