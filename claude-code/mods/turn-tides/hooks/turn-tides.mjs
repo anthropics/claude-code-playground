@@ -161,13 +161,18 @@ export function register(on) {
 
 // Not every user-role row is a question the person typed: slash commands,
 // local-command echoes and interruption markers ride the same door.
-function isQuestionText(text) {
+// the !-passthrough envelope is <bash-input> for the command line and
+// <bash-stdout> for its output, two separate rows; only the input is a turn
+function isLocalEcho(text) {
   return (
-    text !== "" &&
-    !text.startsWith("/") &&
-    !text.startsWith("<command-name>") &&
-    !text.startsWith("[Request interrupted")
+    text.startsWith("<command-name>") ||
+    text.startsWith("<bash-") ||
+    text.startsWith("<local-command")
   );
+}
+
+function isQuestionText(text) {
+  return text !== "" && !text.startsWith("/") && !isLocalEcho(text) && !text.startsWith("[Request interrupted");
 }
 
 function textOf(content) {
