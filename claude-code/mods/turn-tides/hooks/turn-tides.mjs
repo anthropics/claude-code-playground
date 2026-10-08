@@ -21,9 +21,11 @@
 
 const ANSWER_CAP = 240;
 
-// Turns: { id, kind, text, answer, at }, oldest first — kind is 'ask' for a
+// Turns: { id, kind, text, answer, tokens, at }, oldest first — kind is 'ask' for a
 // question with its answer, 'command' for a `!`-passthrough shell command the
-// person ran (one bar of its own colour, no answer). A module variable like
+// person ran; tokens is the turn's output tokens (what the bar reads).
+// question with its answer, 'command' for a `!`-passthrough shell command the
+// A module variable like
 // token-weather's readings: a reload starts it over, and the next prompt's
 // lazy seed fills it back in.
 let turns = [];
@@ -60,7 +62,7 @@ export function register(on) {
         : text;
       if ((kind === "ask" && isQuestionText(text) && !turns.some(turn => turn.id === e.uuid)) ||
           (kind === "command" && body !== "" && !turns.some(turn => turn.id === e.uuid))) {
-        turns.push({ id: e.uuid, kind, text: body, answer: "", at: Date.now() });
+        turns.push({ id: e.uuid, kind, text: body, answer: "", tokens: 0, at: Date.now() });
         $.ui.invalidate("ui.render");
       }
     }
@@ -76,6 +78,7 @@ export function register(on) {
       const last = turns[turns.length - 1];
       if (last && last.kind === "ask" && last.answer === "") {
         last.answer = oneLine(e.answer, ANSWER_CAP);
+        last.tokens = e.usage?.output_tokens ?? 0;
         $.ui.invalidate("ui.render");
       }
     }
@@ -108,11 +111,13 @@ export function register(on) {
           Text({
             color: "black",
             dimColor: true,
-            children: q.kind === "command"
-              ? "! local command"
-              : q.answer === ""
-                ? "A: …"
-                : `A: ${oneLine(q.answer, room)}`,
+            children:
+              (q.kind === "command"
+                ? "! local command"
+                : q.answer === ""
+                  ? "A: …"
+                  : `A: ${oneLine(q.answer, room)}`) +
+              (q.kind === "ask" && q.tokens > 0 ? `  ↓${shortTokens(q.tokens)}` : ""),
           }),
         ],
       }),
@@ -217,12 +222,12 @@ async function seed($, transcriptPath) {
     if (row.type === "user" && row.isMeta !== true && row.isSidechain !== true) {
       const text = textOf(row.message?.content);
       if (isQuestionText(text)) {
-        found.push({ id: row.uuid, kind: "ask", text, answer: "", at: Date.parse(row.timestamp ?? "") || 0 });
+        found.push({ id: row.uuid, kind: "ask", text, answer: "", tokens: 0, at: Date.parse(row.timestamp ?? "") || 0 });
         continue;
       }
       const command = /^<bash-input>([\s\S]*?)<\/bash-input>/.exec(text)?.[1]?.trim();
       if (command) {
-        found.push({ id: row.uuid, kind: "command", text: command, answer: "", at: Date.parse(row.timestamp ?? "") || 0 });
+        found.push({ id: row.uuid, kind: "command", text: command, answer: "", tokens: 0, at: Date.parse(row.timestamp ?? "") || 0 });
         continue;
       }
     }
@@ -230,6 +235,10 @@ async function seed($, transcriptPath) {
       const text = oneLine(textOf(row.message?.content), ANSWER_CAP);
       if (text !== "") {
         found[found.length - 1].answer = text;
+      }
+      const out = row.message?.usage?.output_tokens;
+      if (typeof out === "number") {
+        found[found.length - 1].tokens += out;
       }
     }
   }
@@ -281,9 +290,13 @@ function scaleStrip(list, columns) {
 // width until its answer lands
 function barWidth(q) {
   if (q.kind === "command") return 1;
-  const len = q.text.length + q.answer.length;
-  if (len <= 80) return 2;
-  if (len <= 200) return 3;
-  if (len <= 400) return 4;
+  if (q.tokens === 0) return 3;
+  if (q.tokens <= 600) return 2;
+  if (q.tokens <= 2000) return 3;
+  if (q.tokens <= 8000) return 4;
   return 5;
+}
+
+function shortTokens(n) {
+  return n >= 1000 ? `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k` : String(n);
 }
