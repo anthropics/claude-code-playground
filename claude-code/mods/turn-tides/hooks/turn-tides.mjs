@@ -265,15 +265,31 @@ async function seed($, transcriptPath, merge = false) {
   $.ui.invalidate("ui.render");
 }
 
-// the whole file is preferred; a transcript past the 4 MiB read cap falls
-// back to its last MiB through a host tail
+// the whole file is preferred; a transcript past the 4 MiB read cap is
+// walked in contiguous 4 MiB windows through host commands (tail from a
+// byte offset, the engine capping each run's stdout at 4 MiB), the windows
+// joined back into one text — every turn in the file is reachable, however
+// long the session. A row cut by a window boundary may parse nowhere; that
+// costs at most one turn per 4 MiB.
+const WINDOW = 4194304;
+
 async function readTranscript($, path) {
   const whole = await $.fs.read(path).catch(() => undefined);
   if (whole !== undefined) {
     return whole;
   }
-  const tail = await $.process.run(["tail", "-c", "4194304", path]).catch(() => undefined);
-  return tail === undefined || tail.exitCode !== 0 ? undefined : tail.stdout;
+  const wc = await $.process.run(["wc", "-c", path]).catch(() => undefined);
+  const size = Number(wc?.stdout.trim().split(/\s+/)[0]);
+  if (wc === undefined || wc.exitCode !== 0 || !Number.isFinite(size)) {
+    return undefined;
+  }
+  const parts = [];
+  for (let start = 1; start <= size; start += WINDOW) {
+    const run = await $.process.run(["tail", "-c", `+${start}`, path]).catch(() => undefined);
+    if (run === undefined || run.exitCode !== 0) break;
+    parts.push(run.stdout);
+  }
+  return parts.length === 0 ? undefined : parts.join("");
 }
 
 function oneLine(text, room) {
