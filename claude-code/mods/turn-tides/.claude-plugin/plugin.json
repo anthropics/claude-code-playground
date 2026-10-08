@@ -1,0 +1,13 @@
+{
+  "name": "turn-tides",
+  "version": "0.1.0",
+  "description": "The tides of the session's turns, drawn above the prompt: one bar per turn, hover for its summary, click to jump back to that turn.",
+  "author": {
+    "name": "pengkangzhen"
+  },
+  "keywords": [
+    "mods",
+    "navigation",
+    "transcript"
+  ]
+}

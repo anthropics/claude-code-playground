@@ -21,6 +21,11 @@
       "name": "token-weather",
       "source": "./token-weather",
       "description": "A live forecast of the context window, drawn above the prompt."
+    },
+    {
+      "name": "turn-tides",
+      "source": "./turn-tides",
+      "description": "The tides of the session's turns, drawn above the prompt: one bar per turn, hover for its summary, click to jump to that turn."
     }
   ]
 }
