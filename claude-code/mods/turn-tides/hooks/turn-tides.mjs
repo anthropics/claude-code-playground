@@ -241,9 +241,13 @@ function scaleStrip(list, columns) {
   const bars = list.length > budget ? list.slice(-budget) : list;
   const widths = bars.map(barWidth);
   const sum = widths.reduce((a, b) => a + b, 0);
-  const natural = sum + Math.max(0, bars.length - 1);
-  if (natural <= budget) {
+  const gaps = bars.length - 1;
+  if (sum + gaps <= budget) {
     return { bars, widths, gap: 1 };
+  }
+  if (bars.length + gaps <= budget) {
+    const k = (budget - gaps) / sum;
+    return { bars, widths: widths.map(w => Math.max(1, Math.floor(w * k))), gap: 1 };
   }
   const k = budget / sum;
   return { bars, widths: widths.map(w => Math.max(1, Math.floor(w * k))), gap: 0 };
