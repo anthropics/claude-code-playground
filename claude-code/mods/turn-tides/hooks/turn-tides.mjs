@@ -107,13 +107,12 @@ export function register(on) {
 
     const strip = Box({
       flexDirection: "row",
-      flexWrap: "wrap",
       gap: 1,
       paddingX: 1,
       children: [
         Text({ color: "cyan", bold: true, children: `≋  ${turns.length}` }),
         Text({ dimColor: true, children: "tides" }),
-        ...turns.map(q =>
+        ...fitOnOneLine(turns, e.bodyColumns ?? 80).map(q =>
           Box({
             key: `b:${q.id}`,
             backgroundColor: "cyan",
@@ -228,6 +227,20 @@ async function readTranscript($, path) {
 function oneLine(text, room) {
   const flat = text.replace(/\s+/g, " ");
   return flat.length > room ? flat.slice(0, Math.max(1, room - 1)) + "…" : flat;
+}
+
+// the strip never wraps: fill one line from the newest turn backwards until
+// the width runs out, like token-weather's last-twelve chart — the count in
+// the lead still names every turn there was
+function fitOnOneLine(list, columns) {
+  const budget = Math.max(24, Math.max(8, columns) - 14);
+  let used = 0;
+  let start = list.length;
+  while (start > 0 && used + barWidth(list[start - 1]) + 1 <= budget) {
+    start -= 1;
+    used += barWidth(list[start]) + 1;
+  }
+  return list.slice(start);
 }
 
 // a turn's bar width, token-weather's history chart turned horizontal: the
