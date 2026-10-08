@@ -105,14 +105,15 @@ export function register(on) {
       }),
     );
 
+    const scaled = scaleStrip(turns, e.bodyColumns ?? 80);
     const strip = Box({
       flexDirection: "row",
-      gap: 1,
+      gap: scaled.gap,
       paddingX: 1,
       children: [
         Text({ color: "cyan", bold: true, children: `≋  ${turns.length}` }),
         Text({ dimColor: true, children: "tides" }),
-        ...fitOnOneLine(turns, e.bodyColumns ?? 80).map(q =>
+        ...scaled.bars.map((q, i) =>
           Box({
             key: `b:${q.id}`,
             backgroundColor: "cyan",
@@ -121,7 +122,7 @@ export function register(on) {
               Button({
                 key: `q:${q.id}`,
                 plain: true,
-                label: " ".repeat(barWidth(q)),
+                label: " ".repeat(scaled.widths[i]),
                 onPress: () =>
                   void $.ui.scroll({ to: { requestId: q.id }, block: "start" }).catch(
                     () => undefined,
@@ -229,18 +230,23 @@ function oneLine(text, room) {
   return flat.length > room ? flat.slice(0, Math.max(1, room - 1)) + "…" : flat;
 }
 
-// the strip never wraps: fill one line from the newest turn backwards until
-// the width runs out, like token-weather's last-twelve chart — the count in
-// the lead still names every turn there was
-function fitOnOneLine(list, columns) {
+// the strip never wraps and no turn is dropped: when the natural widths
+// overflow the line, every bar scales by its share of the full budget
+// (floored at one column, so the mapping stays monotone — longer answers
+// stay visibly longer until the physics of the terminal runs out) and the
+// bars touch like token-weather's chart. Only a turn count beyond the raw
+// columns degenerates to the newest ones.
+function scaleStrip(list, columns) {
   const budget = Math.max(24, Math.max(8, columns) - 14);
-  let used = 0;
-  let start = list.length;
-  while (start > 0 && used + barWidth(list[start - 1]) + 1 <= budget) {
-    start -= 1;
-    used += barWidth(list[start]) + 1;
+  const bars = list.length > budget ? list.slice(-budget) : list;
+  const widths = bars.map(barWidth);
+  const sum = widths.reduce((a, b) => a + b, 0);
+  const natural = sum + Math.max(0, bars.length - 1);
+  if (natural <= budget) {
+    return { bars, widths, gap: 1 };
   }
-  return list.slice(start);
+  const k = budget / sum;
+  return { bars, widths: widths.map(w => Math.max(1, Math.floor(w * k))), gap: 0 };
 }
 
 // a turn's bar width, token-weather's history chart turned horizontal: the
