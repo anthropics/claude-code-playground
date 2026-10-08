@@ -30,6 +30,12 @@ const ANSWER_CAP = 240;
 // lazy seed fills it back in.
 let turns = [];
 
+// a fresh module copy re-seeds on the first prompt after it loads: an
+// incremental list built by an older schema (turns recorded before the
+// tokens field, say) would otherwise keep its stale widths forever; later
+// prompts only re-seed when the strip stands empty
+let seededThisCopy = false;
+
 export function register(on) {
   on("classic.SessionStart", async ($, e, next) => {
     const result = await next(e);
@@ -39,7 +45,10 @@ export function register(on) {
 
   on("classic.UserPromptSubmit", async ($, e, next) => {
     const result = await next(e);
-    if (turns.length === 0) {
+    if (!seededThisCopy) {
+      seededThisCopy = true;
+      await seed($, e.transcript_path);
+    } else if (turns.length === 0) {
       await seed($, e.transcript_path);
     }
     return result;
