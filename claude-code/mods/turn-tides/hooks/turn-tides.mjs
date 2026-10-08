@@ -271,7 +271,7 @@ function oneLine(text, room) {
 function scaleStrip(list, columns) {
   const budget = Math.max(24, Math.max(8, columns) - 14);
   const bars = list.length > budget ? list.slice(-budget) : list;
-  const widths = bars.map(barWidth);
+  const widths = rawWidths(bars);
   const sum = widths.reduce((a, b) => a + b, 0);
   const gaps = bars.length - 1;
   if (sum + gaps <= budget) {
@@ -288,15 +288,28 @@ function scaleStrip(list, columns) {
 // a turn's bar width, token-weather's history chart turned horizontal: the
 // longer the answer, the longer the bar; the running turn sits at a middle
 // width until its answer lands
-function barWidth(q) {
-  if (q.kind === "command") return 1;
-  if (q.tokens === 0) return 3;
-  if (q.tokens <= 600) return 2;
-  if (q.tokens <= 2000) return 3;
-  if (q.tokens <= 8000) return 4;
-  return 5;
-}
-
 function shortTokens(n) {
   return n >= 1000 ? `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k` : String(n);
+}
+
+// dynamic widths, token-weather's rule ("bars scale to the busiest reading
+// shown, so growth shows at any fill level"): an ask's width spreads 2..5
+// across the logarithm of its output tokens between the quietest and the
+// busiest turns in view; ties stay ties, and the running turn matches the
+// latest known one
+function rawWidths(bars) {
+  const known = bars.filter(q => q.kind === "ask" && q.tokens > 0).map(q => q.tokens);
+  if (known.length === 0) return bars.map(q => (q.kind === "command" ? 1 : 3));
+  const lo = Math.log(Math.min(...known));
+  const hi = Math.log(Math.max(...known));
+  const spread = hi - lo;
+  const widthOf = t => (spread === 0 ? 3 : 2 + Math.round((3 * (Math.log(t) - lo)) / spread));
+  let fallback = 3;
+  for (let i = bars.length - 1; i >= 0; i -= 1) {
+    if (bars[i].kind === "ask" && bars[i].tokens > 0) {
+      fallback = widthOf(bars[i].tokens);
+      break;
+    }
+  }
+  return bars.map(q => (q.kind === "command" ? 1 : q.tokens > 0 ? widthOf(q.tokens) : fallback));
 }
