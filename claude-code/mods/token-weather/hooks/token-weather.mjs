@@ -46,12 +46,15 @@ export function register(on) {
     return result;
   });
 
-  on("ui.render", { component: "AbovePrompt" }, ($, e, next) => {
+  on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
     if (e.hasSurvey || readings.length === 0) {
       return next(e);
     }
     const { Box, Text } = $.ui.resolve(e);
-    return band(Box, Text, e.bodyColumns ?? 80);
+    const mine = band(Box, Text, e.bodyColumns ?? 80);
+    // other band mods draw beneath us; compose instead of claiming the band
+    const beneath = await next(e);
+    return beneath ? Box({ flexDirection: "column", children: [mine, beneath] }) : mine;
   });
 }
 
