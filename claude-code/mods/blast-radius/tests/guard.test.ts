@@ -1,3 +1,6 @@
+// Copyright 2026 Anthropic PBC
+// SPDX-License-Identifier: Apache-2.0
+
 import { expect, mock, test } from 'claude-code/testing'
 
 const PANE_PROPS = {
