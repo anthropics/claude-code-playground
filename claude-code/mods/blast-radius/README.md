@@ -4,11 +4,12 @@ A Claude Code mod that holds a risky shell command and shows you what it would c
 
 ## What this shows
 
-When Claude calls Bash with one of the commands below, Blast Radius stops the call, works out what the command would touch, and opens a pane with two buttons: **Proceed** runs the command, **Cancel** refuses it. Claude sees the refusal and the reason.
+When Claude calls Bash or PowerShell with one of the commands below, Blast Radius stops the call, works out what the command would touch, and opens a pane with two buttons: **Proceed** runs the command, **Cancel** refuses it. Claude sees the refusal and the reason.
 
 | Command | What the pane shows |
 |---|---|
 | `rm -r`, `rm -f`, `rm -rf` | The files it would delete, with the count and total size. Globs and `~` are expanded. |
+| PowerShell `Remove-Item` (also `ri`, `rd`, `erase`, `del`, `rmdir`) with `-Recurse` or `-Force` | The same report as `rm`. Parameter names can be abbreviated (`-r`, `-rec`, `-f`), as PowerShell allows. |
 | `git reset --hard` | The files with uncommitted changes, from `git status --porcelain`, and `git diff --shortstat`. |
 | `git checkout -- .`, `git restore .` | The files with unstaged changes. |
 | `git clean` | The untracked paths it would remove, from `git clean -n` with the same flags. |
@@ -16,7 +17,7 @@ When Claude calls Bash with one of the commands below, Blast Radius stops the ca
 | `manage.py migrate`, `db:migrate`, `alembic upgrade`, `prisma migrate` | The pending migrations, from the tool's own status command. |
 | any other `migrate` | A note that it can't list the pending migrations for that tool. |
 
-Every other command runs as normal. If the command line moves first, with `cd dir &&`, `pushd`/`popd` or `git -C dir`, Blast Radius measures in that folder. A `cd` inside `( ... )` only applies inside the parentheses, as in the shell.
+The `git` and migration rows work the same from either shell. Every other command runs as normal. If the command line moves first, with `cd dir &&`, `pushd`/`popd` or `git -C dir` (in PowerShell also `Set-Location`, `Push-Location` and `Pop-Location`), Blast Radius measures in that folder. A `cd` inside `( ... )` only applies inside the parentheses, as in the shell.
 
 The patterns it demonstrates:
 
@@ -66,7 +67,8 @@ The second try, after Proceed:
 **Requirements:**
 
 - Claude Code 2.1.287 or later, where mods load by default. The mod was built and tested on 2.1.280, and `claude plugin validate` passes on 2.1.285.
-- `bash`, `git`, `find` and `du` on your `PATH`. For migrations, the project's own tool (for example `python3 manage.py showmigrations`).
+- For Bash calls: `bash`, `git`, `find` and `du` on your `PATH`.
+- For PowerShell calls: `git`, and `pwsh` (preferred) or `powershell` on your `PATH`, to measure `Remove-Item`. For migrations, the project's own tool (for example `python3 manage.py showmigrations`).
 - For the side pane, a terminal about 144 columns wide or more. Narrower terminals get the band above the prompt.
 
 No environment variables or configuration.
@@ -117,7 +119,10 @@ No environment variables or configuration.
 - It follows `cd`, `pushd`, `popd` and `git -C` on the same line. `cd -`, and a folder that doesn't exist, can't be measured; the pane says so and still holds the command. Otherwise it starts from the session's working folder.
 - In a narrow terminal the report is drawn in the band above the prompt, which only one mod can use at a time. If another mod that draws there (such as Replay Theater or Token Weather in this folder) takes the band, the Proceed and Cancel buttons may not show, and the command is refused after 10 minutes. Use a wider terminal, or turn the other mod off, when you rely on Blast Radius.
 - One command is held at a time. A second risky call, from a subagent for example, waits until the first is answered.
-- It only watches the Bash tool. File edits and other tools aren't held.
+- It watches the Bash and PowerShell tools. File edits and other tools aren't held.
+- PowerShell is read more simply than Bash. A command is split on `;`, `&&`, `||` and new lines, but not on `|`, so a risky cmdlet that only appears after a pipe (`Get-ChildItem build | Remove-Item -Force`) isn't caught. `$(...)`, script blocks, splatting, here-strings, `Invoke-Expression`, `& $command` and aliases you define yourself aren't read either.
+- `-WhatIf` and `-Confirm:$false` aren't special-cased: a `Remove-Item -Recurse -WhatIf` is still held.
+- `cmd.exe` commands such as `rd /s /q` aren't held, since they don't run through the PowerShell tool.
 - The `rm` count is approximate: a path matched twice is counted twice, and a file name with a line break is not counted. The list shows the first 10 files. Counts come from `find` and sizes from `du -k`, so a size is the space on disk, to the nearest kilobyte. A very large tree can take a few seconds to measure.
 - The force-push list uses your last fetch of the remote branch. Without one, it can't list the dropped commits, and it says so. When the push names no remote, it assumes `origin`.
 - To list pending migrations, it runs the tool's own status command (for example `python3 manage.py showmigrations`), which loads your project's code before you choose Proceed or Cancel. If that fails, the pane says it couldn't list them.

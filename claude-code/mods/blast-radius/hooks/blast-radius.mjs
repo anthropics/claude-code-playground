@@ -1,9 +1,9 @@
 // Copyright 2026 Anthropic PBC
 // SPDX-License-Identifier: Apache-2.0
 //
-// Blast Radius: holds a risky Bash command and shows what it would change.
+// Blast Radius: holds a risky Bash or PowerShell command and shows what it would change.
 //
-// tool.call (Bash): if the command is risky, work out its blast radius, open a
+// tool.call (Bash, PowerShell): if the command is risky, work out its blast radius, open a
 // pane with Proceed and Cancel, and hold the call until one is pressed.
 // ui.render (Pane): draws the report. If the surface won't place the pane (a
 // narrow terminal), the same report is drawn in the AbovePrompt band instead.
@@ -20,91 +20,13 @@ const POLL_SECONDS = "0.25";
 const HOLD_LIMIT_MS = 10 * 60 * 1000;
 const LIST_MAX = 10;
 
-// The call being held, or null. One at a time: Bash calls in a turn run in order.
+// The call being held, or null. One at a time: Bash and PowerShell calls in a
+// turn run in order, and share this one slot.
 let held = null;
 
 export function register(on) {
-  on("tool.call", { tool: "Bash" }, async ($, e, next) => {
-    const risk = classify(String(e.command ?? ""));
-    if (risk === null) {
-      return next(e);
-    }
-    // One hold at a time. If another risky call is already held (a subagent's,
-    // say), wait until it is answered. `held` is claimed with no await between
-    // the check and the claim, so two waiting calls can't both get through.
-    while (held !== null) {
-      if (next.signal.aborted) {
-        return { deny: "Blast Radius held this command and did not run it: the turn was interrupted. Do not retry it unless the user asks you to." };
-      }
-      await $.process.run(["sleep", POLL_SECONDS], { timeoutMs: 5000 });
-    }
-    const mine = { command: String(e.command), risk, report: null, decision: null, where: "pane" };
-    held = mine;
-
-    let opened = { isPlaced: false };
-    let decision;
-    let summary = risk.label;
-    try {
-      // Measure where the command will run: the session folder, moved by any
-      // `cd dir &&` or `git -C dir` earlier in the same command line.
-      const sessionCwd = await $.session.cwd();
-      const cwd = risk.dir ? await resolveDir($, sessionCwd, risk.dir) : sessionCwd;
-      mine.report = cwd === null
-        ? { summary: `${risk.label} in ${risk.dir}`, lines: [], note: `Couldn't find the folder ${risk.dir}, so I couldn't measure what this would change.` }
-        : await measure($, risk, cwd);
-      summary = mine.report.summary;
-
-      opened = await $.ui.open({ id: PANE_ID, title: "Blast Radius", focus: true, rows: paneRows(mine.report) });
-      if (!opened.isPlaced) {
-        mine.where = "band";
-      }
-      $.ui.invalidate("ui.render");
-
-      const startedAt = await $.clock.now();
-      while (mine.decision === null) {
-        if (next.signal.aborted) {
-          mine.decision = "interrupted";
-          break;
-        }
-        if ((await $.clock.now()) - startedAt > HOLD_LIMIT_MS) {
-          mine.decision = "timeout";
-          break;
-        }
-        await $.process.run(["sleep", POLL_SECONDS], { timeoutMs: 5000 });
-      }
-    } catch {
-      mine.decision = "error"; // anything unexpected refuses the command
-    } finally {
-      decision = mine.decision;
-      // Close this call's pane before releasing the hold, so the next call's
-      // pane can't be the one that gets closed.
-      try {
-        if (opened.isPlaced) {
-          await $.ui.close({ id: PANE_ID });
-        }
-      } catch {
-        // the pane is already gone
-      }
-      if (held === mine) {
-        held = null;
-      }
-      $.ui.invalidate("ui.render");
-    }
-
-    if (decision === "proceed") {
-      $.ui.toast("Blast Radius: running it");
-      return next(e);
-    }
-    const why = {
-      cancel: "the user pressed Cancel",
-      timeout: "no answer within 10 minutes",
-      interrupted: "the turn was interrupted",
-      error: "Blast Radius hit an error while holding it",
-    }[decision] ?? "no answer was recorded";
-    return {
-      deny: `Blast Radius held this command and did not run it: ${why}. It would have: ${summary}. Do not retry it unless the user asks you to.`,
-    };
-  });
+  on("tool.call", { tool: "Bash" }, async ($, e, next) => guard($, e, next, "bash"));
+  on("tool.call", { tool: "PowerShell" }, async ($, e, next) => guard($, e, next, "powershell"));
 
   on("ui.render", { component: "Pane" }, ($, e, next) => {
     if (e.requestId !== PANE_ID || held === null || held.report === null) {
@@ -121,10 +43,95 @@ export function register(on) {
   });
 }
 
-// ---- What counts as risky -------------------------------------------------
+// ---- Holding a risky call --------------------------------------------------
 
-// sudo options that take a value, so the value isn't read as the command.
-const SUDO_VALUE_OPTIONS = new Set(["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-T", "-U"]);
+/** Holds one risky call. shellKind is "bash" or "powershell": each reads that shell's syntax. */
+async function guard($, e, next, shellKind) {
+  const risk = shellKind === "bash" ? classify(String(e.command ?? "")) : classifyPowerShell(String(e.command ?? ""));
+  if (risk === null) {
+    return next(e);
+  }
+  // One hold at a time. If another risky call is already held (a subagent's,
+  // say), wait until it is answered. `held` is claimed with no await between
+  // the check and the claim, so two waiting calls can't both get through.
+  while (held !== null) {
+    if (next.signal.aborted) {
+      return { deny: "Blast Radius held this command and did not run it: the turn was interrupted. Do not retry it unless the user asks you to." };
+    }
+    await $.process.run(["sleep", POLL_SECONDS], { timeoutMs: 5000 });
+  }
+  const mine = { command: String(e.command), risk, report: null, decision: null, where: "pane" };
+  held = mine;
+
+  let opened = { isPlaced: false };
+  let decision;
+  let summary = risk.label;
+  try {
+    // Measure where the command will run: the session folder, moved by any
+    // `cd dir &&` or `git -C dir` earlier in the same command line.
+    const sessionCwd = await $.session.cwd();
+    const cwd = risk.dir
+      ? await (shellKind === "bash" ? resolveDir($, sessionCwd, risk.dir) : resolveDirPowerShell($, sessionCwd, risk.dir))
+      : sessionCwd;
+    mine.report = cwd === null
+      ? { summary: `${risk.label} in ${risk.dir}`, lines: [], note: `Couldn't find the folder ${risk.dir}, so I couldn't measure what this would change.` }
+      : await measure($, risk, cwd, shellKind);
+    summary = mine.report.summary;
+
+    opened = await $.ui.open({ id: PANE_ID, title: "Blast Radius", focus: true, rows: paneRows(mine.report) });
+    if (!opened.isPlaced) {
+      mine.where = "band";
+    }
+    $.ui.invalidate("ui.render");
+
+    const startedAt = await $.clock.now();
+    while (mine.decision === null) {
+      if (next.signal.aborted) {
+        mine.decision = "interrupted";
+        break;
+      }
+      if ((await $.clock.now()) - startedAt > HOLD_LIMIT_MS) {
+        mine.decision = "timeout";
+        break;
+      }
+      await $.process.run(["sleep", POLL_SECONDS], { timeoutMs: 5000 });
+    }
+  } catch {
+    mine.decision = "error"; // anything unexpected refuses the command
+  } finally {
+    decision = mine.decision;
+    // Close this call's pane before releasing the hold, so the next call's
+    // pane can't be the one that gets closed.
+    try {
+      if (opened.isPlaced) {
+        await $.ui.close({ id: PANE_ID });
+      }
+    } catch {
+      // the pane is already gone
+    }
+    if (held === mine) {
+      held = null;
+    }
+    $.ui.invalidate("ui.render");
+  }
+
+  if (decision === "proceed") {
+    $.ui.toast("Blast Radius: running it");
+    return next(e);
+  }
+  const why = {
+    cancel: "the user pressed Cancel",
+    timeout: "no answer within 10 minutes",
+    interrupted: "the turn was interrupted",
+    error: "Blast Radius hit an error while holding it",
+  }[decision] ?? "no answer was recorded";
+  return {
+    deny: `Blast Radius held this command and did not run it: ${why}. It would have: ${summary}. Do not retry it unless the user asks you to.`,
+  };
+}
+
+// ---- What counts as risky: shared, shell-agnostic detection ---------------
+
 // Commands that only read, so a bare word "migrate" in them isn't a migration.
 const READ_ONLY = new Set(["ls", "cat", "echo", "printf", "grep", "rg", "find", "less", "head", "tail", "cd", "git"]);
 
@@ -135,6 +142,68 @@ function joinDir(dir, arg) {
   }
   return dir ? `${dir}/${arg}` : arg;
 }
+
+/** git's own CLI is identical regardless of shell: args are already tokenized words. */
+function classifyGitArgs(args, dir) {
+  // Git's own options come before the subcommand; -C moves where it runs.
+  let gitDir = dir;
+  let i = 0;
+  while (i < args.length && args[i].startsWith("-")) {
+    if (args[i] === "-C" && i + 1 < args.length) {
+      gitDir = joinDir(gitDir, args[i + 1]);
+      i += 2;
+    } else if (args[i] === "-c" && i + 1 < args.length) {
+      i += 2;
+    } else {
+      i += 1;
+    }
+  }
+  const sub = args[i];
+  const rest = args.slice(i + 1);
+  if (sub === "reset" && rest.includes("--hard")) {
+    return { kind: "git-reset", label: "git reset --hard", args: rest, dir: gitDir };
+  }
+  if (sub === "clean") {
+    return { kind: "git-clean", label: "git clean", args: rest, dir: gitDir };
+  }
+  if (sub === "push" && rest.some((a) => a === "--force" || a === "-f" || a.startsWith("--force-with-lease") || /^\+/.test(a))) {
+    return { kind: "git-push-force", label: "git push --force", args: rest, dir: gitDir };
+  }
+  const stagedOnly = sub === "restore" && rest.includes("--staged") && !rest.includes("--worktree") && !rest.includes("-W");
+  if ((sub === "checkout" || sub === "restore") && rest.includes(".") && !stagedOnly) {
+    return { kind: "git-checkout", label: `git ${sub} -- .`, args: rest, dir: gitDir };
+  }
+  return null;
+}
+
+/** A migration-tool invocation is identical regardless of shell: words are already tokenized. */
+function classifyMigrationWords(words, args, cmd, dir) {
+  const joined = words.join(" ");
+  if (/\balembic\s+upgrade\b/.test(joined)) {
+    return { kind: "migrate", tool: "alembic", label: "alembic upgrade", dir };
+  }
+  if (/\bdb:migrate(?!:status\b)/.test(joined)) {
+    return { kind: "migrate", tool: "rails", label: "db:migrate", dir };
+  }
+  if (/\bprisma\s+migrate\b/.test(joined)) {
+    return { kind: "migrate", tool: "prisma", label: "prisma migrate", dir };
+  }
+  if (/\bmanage\.py\s+migrate\b/.test(joined)) {
+    return { kind: "migrate", tool: "django", label: "manage.py migrate", dir };
+  }
+  if (!READ_ONLY.has(cmd) && args.includes("migrate")) {
+    return { kind: "migrate", tool: "unknown", label: "migrate", dir };
+  }
+  return null;
+}
+
+// ---- Bash: what counts as risky --------------------------------------------
+
+// sudo options that take a value, so the value isn't read as the command.
+const SUDO_VALUE_OPTIONS = new Set(["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-T", "-U"]);
+
+// Words that can come before the real command without changing what it does.
+const PREFIXES = new Set(["command", "exec", "env", "nohup", "time", "then", "do", "else", "!"]);
 
 /** The first risky segment of a shell command, or null. */
 function classify(command) {
@@ -163,108 +232,74 @@ function classify(command) {
   return null;
 }
 
-// Words that can come before the real command without changing what it does.
-const PREFIXES = new Set(["command", "exec", "env", "nohup", "time", "then", "do", "else", "!"]);
-
 /** One segment: a risk, { cd } for a folder change, or null. */
 function classifySegment(segment, dir, pushed) {
-  {
-    const words = tokenize(segment.trim().replace(/^[({]+\s*/, "").replace(/\s*[)}]+$/, ""));
-    while (words.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) {
-      words.shift(); // leading VAR=value
-    }
-    if (words[0] === "sudo") {
-      words.shift();
-      while (words.length > 0 && words[0].startsWith("-")) {
-        const option = words.shift();
-        if (SUDO_VALUE_OPTIONS.has(option)) {
-          words.shift();
-        }
-      }
-    }
-    while (words.length > 0 && (PREFIXES.has(words[0]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]))) {
-      words.shift();
-    }
-    if (words[0] === "nice") {
-      words.shift();
-      if (words[0] === "-n") {
-        words.splice(0, 2);
-      } else if (/^-\d+$/.test(words[0] ?? "")) {
+  const words = tokenize(segment.trim().replace(/^[({]+\s*/, "").replace(/\s*[)}]+$/, ""));
+  while (words.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) {
+    words.shift(); // leading VAR=value
+  }
+  if (words[0] === "sudo") {
+    words.shift();
+    while (words.length > 0 && words[0].startsWith("-")) {
+      const option = words.shift();
+      if (SUDO_VALUE_OPTIONS.has(option)) {
         words.shift();
       }
     }
-    const [first, ...args] = words;
-    if (first === undefined) {
-      return null;
-    }
-    const cmd = first.replace(/^\\/, ""); // \rm skips aliases; it's still rm
-    if (cmd === "cd") {
-      return { cd: args[0] === "-" ? "-" : joinDir(dir, args[0]) };
-    }
-    if (cmd === "pushd") {
-      pushed.push(dir);
-      return { cd: joinDir(dir, args[0]) };
-    }
-    if (cmd === "popd") {
-      return { cd: pushed.length > 0 ? pushed.pop() : "-" };
-    }
-    if (cmd === "rm" || cmd.endsWith("/rm")) {
-      const flags = args.filter((a) => a.startsWith("-"));
-      const recursive = flags.some((f) => f === "--recursive" || (/^-[^-]/.test(f) && /[rR]/.test(f)));
-      const force = flags.some((f) => f === "--force" || (/^-[^-]/.test(f) && f.includes("f")));
-      if (recursive || force) {
-        const targets = args.filter((a) => !a.startsWith("-") || a === "-");
-        return { kind: "rm", label: `rm ${flags.join(" ")}`.trim(), targets, dir };
-      }
-    }
-    if (cmd === "git") {
-      // Git's own options come before the subcommand; -C moves where it runs.
-      let gitDir = dir;
-      let i = 0;
-      while (i < args.length && args[i].startsWith("-")) {
-        if (args[i] === "-C" && i + 1 < args.length) {
-          gitDir = joinDir(gitDir, args[i + 1]);
-          i += 2;
-        } else if (args[i] === "-c" && i + 1 < args.length) {
-          i += 2;
-        } else {
-          i += 1;
-        }
-      }
-      const sub = args[i];
-      const rest = args.slice(i + 1);
-      if (sub === "reset" && rest.includes("--hard")) {
-        return { kind: "git-reset", label: "git reset --hard", args: rest, dir: gitDir };
-      }
-      if (sub === "clean") {
-        return { kind: "git-clean", label: "git clean", args: rest, dir: gitDir };
-      }
-      if (sub === "push" && rest.some((a) => a === "--force" || a === "-f" || a.startsWith("--force-with-lease") || /^\+/.test(a))) {
-        return { kind: "git-push-force", label: "git push --force", args: rest, dir: gitDir };
-      }
-      const stagedOnly = sub === "restore" && rest.includes("--staged") && !rest.includes("--worktree") && !rest.includes("-W");
-      if ((sub === "checkout" || sub === "restore") && rest.includes(".") && !stagedOnly) {
-        return { kind: "git-checkout", label: `git ${sub} -- .`, args: rest, dir: gitDir };
-      }
-    }
-    const joined = words.join(" ");
-    if (/\balembic\s+upgrade\b/.test(joined)) {
-      return { kind: "migrate", tool: "alembic", label: "alembic upgrade", dir };
-    }
-    if (/\bdb:migrate(?!:status\b)/.test(joined)) {
-      return { kind: "migrate", tool: "rails", label: "db:migrate", dir };
-    }
-    if (/\bprisma\s+migrate\b/.test(joined)) {
-      return { kind: "migrate", tool: "prisma", label: "prisma migrate", dir };
-    }
-    if (/\bmanage\.py\s+migrate\b/.test(joined)) {
-      return { kind: "migrate", tool: "django", label: "manage.py migrate", dir };
-    }
-    if (!READ_ONLY.has(cmd) && args.includes("migrate")) {
-      return { kind: "migrate", tool: "unknown", label: "migrate", dir };
+  }
+  while (words.length > 0 && (PREFIXES.has(words[0]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]))) {
+    words.shift();
+  }
+  if (words[0] === "nice") {
+    words.shift();
+    if (words[0] === "-n") {
+      words.splice(0, 2);
+    } else if (/^-\d+$/.test(words[0] ?? "")) {
+      words.shift();
     }
   }
-  return null;
+  const [first, ...args] = words;
+  if (first === undefined) {
+    return null;
+  }
+  const cmd = first.replace(/^\\/, ""); // \rm skips aliases; it's still rm
+  if (cmd === "cd") {
+    return { cd: args[0] === "-" ? "-" : joinDir(dir, args[0]) };
+  }
+  if (cmd === "pushd") {
+    pushed.push(dir);
+    return { cd: joinDir(dir, args[0]) };
+  }
+  if (cmd === "popd") {
+    return { cd: pushed.length > 0 ? pushed.pop() : "-" };
+  }
+  if (cmd === "rm" || cmd.endsWith("/rm")) {
+    const flags = args.filter((a) => a.startsWith("-"));
+    const recursive = flags.some((f) => f === "--recursive" || (/^-[^-]/.test(f) && /[rR]/.test(f)));
+    const force = flags.some((f) => f === "--force" || (/^-[^-]/.test(f) && f.includes("f")));
+    if (recursive || force) {
+      const targets = args.filter((a) => !a.startsWith("-") || a === "-");
+      return { kind: "rm", label: `rm ${flags.join(" ")}`.trim(), targets, dir };
+    }
+  }
+  if (cmd === "git") {
+    const risk = classifyGitArgs(args, dir);
+    if (risk !== null) {
+      return risk;
+    }
+  }
+  return classifyMigrationWords(words, args, cmd, dir);
+}
+
+/** Splits one segment into words, honouring quotes. Good enough to read flags and paths. */
+function tokenize(text) {
+  const words = [];
+  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    words.push(m[1] ?? m[2] ?? m[3]);
+  }
+  return words;
 }
 
 // Resolves a `cd` target to an absolute folder, or null if it doesn't exist.
@@ -280,24 +315,180 @@ async function resolveDir($, sessionCwd, dir) {
   return run.exitCode === 0 && out !== "" ? out : null;
 }
 
-/** Splits one segment into words, honouring quotes. Good enough to read flags and paths. */
-function tokenize(text) {
+// ---- PowerShell: what counts as risky --------------------------------------
+
+// PowerShell's default aliases for the cmdlets we track. Matching is case-insensitive.
+const SET_LOCATION = new Set(["set-location", "cd", "chdir", "sl"]);
+const PUSH_LOCATION = new Set(["push-location", "pushd"]);
+const POP_LOCATION = new Set(["pop-location", "popd"]);
+const REMOVE_ITEM = new Set(["remove-item", "ri", "rd", "erase", "del", "rmdir"]);
+
+// `|` is excluded on purpose: a pipeline stage doesn't carry its own positional
+// args (`Get-ChildItem ... | Remove-Item -Force` has no target in that segment),
+// so splitting on it would read a risk that isn't really there.
+const PS_SEPARATOR = /&&|\|\||;|\r?\n/;
+
+/** The first risky segment of a PowerShell command, or null. */
+function classifyPowerShell(command) {
+  let dir = null;
+  const pushed = [];
+  for (const raw of command.split(PS_SEPARATOR)) {
+    const risk = classifySegmentPowerShell(raw, dir, pushed);
+    if (risk !== null && risk.cd === undefined) {
+      return risk;
+    }
+    if (risk !== null) {
+      dir = risk.cd;
+    }
+  }
+  return null;
+}
+
+/** A PowerShell parameter name, matched by any unambiguous prefix (-r, -rec, -recurse all bind to Recurse). */
+function matchesPsFlag(token, fullName) {
+  if (!token.startsWith("-")) {
+    return false;
+  }
+  const body = token.slice(1).toLowerCase();
+  return body.length > 0 && fullName.toLowerCase().startsWith(body);
+}
+
+/** One segment: a risk, { cd } for a folder change, or null. */
+function classifySegmentPowerShell(segment, dir, pushed) {
+  const words = tokenizePowerShell(segment.trim());
+  const [first, ...args] = words;
+  if (first === undefined) {
+    return null;
+  }
+  const cmd = first.toLowerCase();
+
+  if (SET_LOCATION.has(cmd)) {
+    return { cd: args[0] === "-" ? "-" : joinDir(dir, args[0]) };
+  }
+  if (PUSH_LOCATION.has(cmd)) {
+    pushed.push(dir);
+    return { cd: joinDir(dir, args[0]) };
+  }
+  if (POP_LOCATION.has(cmd)) {
+    return { cd: pushed.length > 0 ? pushed.pop() : "-" };
+  }
+  if (REMOVE_ITEM.has(cmd)) {
+    const recursive = args.some((a) => matchesPsFlag(a, "Recurse"));
+    const force = args.some((a) => matchesPsFlag(a, "Force"));
+    if (recursive || force) {
+      const flags = [recursive ? "-Recurse" : null, force ? "-Force" : null].filter(Boolean);
+      const targets = args.filter((a) => !a.startsWith("-"));
+      return { kind: "rm", label: `Remove-Item ${flags.join(" ")}`.trim(), targets, dir };
+    }
+  }
+  if (cmd === "git") {
+    const risk = classifyGitArgs(args, dir);
+    if (risk !== null) {
+      return risk;
+    }
+  }
+  return classifyMigrationWords(words, args, cmd, dir);
+}
+
+/** Splits one segment into words. Single quotes are literal; double quotes allow a backtick escape. */
+function tokenizePowerShell(text) {
   const words = [];
-  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g;
+  const re = /"((?:[^"`]|`.)*)"|'((?:[^']|'')*)'|(\S+)/g;
   let m;
   while ((m = re.exec(text)) !== null) {
-    words.push(m[1] ?? m[2] ?? m[3]);
+    if (m[1] !== undefined) {
+      words.push(m[1].replace(/`(.)/g, "$1"));
+    } else if (m[2] !== undefined) {
+      words.push(m[2].replace(/''/g, "'"));
+    } else {
+      words.push(m[3]);
+    }
   }
   return words;
+}
+
+/** Runs a PowerShell script via argv, preferring pwsh (the tool's own PS7+ edition), falling
+    back to Windows PowerShell if pwsh isn't on PATH. Script args reach the script only via
+    $args, never interpolated into the script text. */
+async function runPowerShell($, scriptAndArgs, opts) {
+  try {
+    return await $.process.run(["pwsh", "-NoProfile", "-NonInteractive", "-Command", ...scriptAndArgs], opts);
+  } catch {
+    return await $.process.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ...scriptAndArgs], opts);
+  }
+}
+
+// $args[0] holds `dir`; never interpolated into the script text, the same security
+// property as the Bash CD_SCRIPT, which reads $1 the same way. -LiteralPath avoids
+// reading *, ? or [ in the folder name as a wildcard.
+const CD_SCRIPT_PS = `
+$d = $args[0]
+if ($d -eq "~") { $d = $HOME }
+elseif ($d.StartsWith("~/") -or $d.StartsWith("~\\")) { $d = Join-Path $HOME $d.Substring(2) }
+try { (Resolve-Path -LiteralPath $d -ErrorAction Stop).ProviderPath } catch { exit 1 }
+`;
+
+async function resolveDirPowerShell($, sessionCwd, dir) {
+  if (dir === "-") {
+    return null; // no `cd -` history stack in PowerShell by default
+  }
+  const run = await runPowerShell($, [CD_SCRIPT_PS, dir], { cwd: sessionCwd, timeoutMs: 5000 });
+  const out = run.stdout.trim();
+  return run.exitCode === 0 && out !== "" ? out : null;
+}
+
+// Each target reaches the script only via $args, never interpolated into script
+// text, the same security property as Bash's RM_SCRIPT. A target containing *, ?
+// or [ is expanded as a wildcard; otherwise matched literally, so a path
+// containing those characters isn't misread as a glob.
+const RM_SCRIPT_PS = `
+$targets = @()
+foreach ($p in $args) {
+  $pp = $p
+  if ($pp -eq "~") { $pp = $HOME }
+  elseif ($pp.StartsWith("~/") -or $pp.StartsWith("~\\")) { $pp = Join-Path $HOME $pp.Substring(2) }
+  if ($pp -match '[*?\\[]') { $targets += @(Get-Item -Path $pp -Force -ErrorAction SilentlyContinue) }
+  else { $targets += @(Get-Item -LiteralPath $pp -Force -ErrorAction SilentlyContinue) }
+}
+if ($targets.Count -eq 0) { Write-Output "0 0 0"; exit 0 }
+$files = @()
+foreach ($t in $targets) {
+  if ($t.PSIsContainer) { $files += @(Get-ChildItem -LiteralPath $t.FullName -Recurse -Force -File -ErrorAction SilentlyContinue) }
+  else { $files += $t }
+}
+$bytes = ($files | Measure-Object -Property Length -Sum).Sum
+Write-Output "$($files.Count) $([int64]($bytes)) $($targets.Count)"
+$files | Select-Object -First ${LIST_MAX} -ExpandProperty FullName
+`;
+
+async function measureRmPowerShell($, risk, cwd) {
+  if (risk.targets.length === 0) {
+    return { summary: "Remove-Item with no paths", lines: [], note: "No paths to expand." };
+  }
+  const run = await runPowerShell($, [RM_SCRIPT_PS, ...risk.targets], { cwd, timeoutMs: 15000 });
+  const [head, ...rest] = run.stdout.split("\n").filter((l) => l !== "");
+  const [files, bytes, found] = (head ?? "0 0 0").split(" ").map(Number);
+  if (!found) {
+    return { summary: `delete nothing: no file matches ${risk.targets.join(" ")}`, lines: [], note: "The paths don't exist, so Remove-Item has nothing to remove." };
+  }
+  if (!files) {
+    return { summary: `delete ${found} ${found === 1 ? "path" : "paths"} with no files in ${found === 1 ? "it" : "them"}`, lines: [], note: `Paths: ${risk.targets.join(" ")}` };
+  }
+  return {
+    summary: `delete ${files} ${files === 1 ? "file" : "files"} (about ${size(bytes)})`,
+    lines: rest,
+    more: Math.max(0, files - rest.length),
+    note: `Paths: ${risk.targets.join(" ")}`,
+  };
 }
 
 // ---- Measuring the blast radius -------------------------------------------
 
 /** { summary, lines, note } for the pane. Never throws: a failed read is said, not hidden. */
-async function measure($, risk, cwd) {
+async function measure($, risk, cwd, shellKind) {
   try {
     if (risk.kind === "rm") {
-      return await measureRm($, risk, cwd);
+      return await (shellKind === "bash" ? measureRm($, risk, cwd) : measureRmPowerShell($, risk, cwd));
     }
     if (risk.kind === "migrate") {
       return await measureMigrations($, risk, cwd);
@@ -526,3 +717,17 @@ function draw(t, state) {
     ],
   });
 }
+
+// ---- Exported for tests ----------------------------------------------------
+
+export {
+  classify,
+  classifyPowerShell,
+  classifyGitArgs,
+  classifyMigrationWords,
+  tokenize,
+  tokenizePowerShell,
+  matchesPsFlag,
+  joinDir,
+  size,
+};
