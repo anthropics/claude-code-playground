@@ -5,13 +5,14 @@ A Claude Code mod that draws a live forecast of your context window in the band 
 ## What this shows
 
 ```text
- ☂  Showers  67% of context  134.4k / 200k   last turns ▁▂█  ▲ +98.3k last turn
+ ☂ Showers    67% of context 134.4k / 200k    forecast  5h ☁ 34% clears 2h 10m  7d ☀ 12% clears 3d 4h    rainfall ▁▂█    98.3k fell last turn
 ```
 
 After each turn, the band shows:
 
 - a weather icon and word for how full the window is,
 - the percentage used, and the tokens used out of the window,
+- the **forecast**: your plan's 5-hour and 7-day limits, each with the same weather scale as the context and the time until it clears (resets). On a narrow terminal the times drop first, then the forecast itself,
 - a chart of the last 12 turns, drawn with block characters, and
 - how much the last turn added.
 
@@ -35,6 +36,7 @@ These are the same figures the status line shows (`total_input_tokens`, `context
 |------|--------------|
 | `session.start` | Takes a first reading, so the band shows before the first turn. |
 | `turn.complete` | Takes a reading after each main-loop turn. Subagent turns are skipped. |
+| `session.measure` | Refreshes the forecast whenever a plan limit moves a whole point, between turns too. |
 | `ui.render` with `{component: "AbovePrompt"}` | Draws the band as one line. |
 
 ## Demo
