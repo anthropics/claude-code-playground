@@ -47,11 +47,11 @@ export function register(on) {
   });
 
   on("ui.render", { component: "AbovePrompt" }, ($, e, next) => {
-    if (e.hasSurvey || readings.length === 0) {
+    if (e.props.hasSurvey || readings.length === 0) {
       return next(e);
     }
     const { Box, Text } = $.ui.resolve(e);
-    return band(Box, Text, e.bodyColumns ?? 80);
+    return band(Box, Text, e.props.bodyColumns ?? 80);
   });
 }
 
