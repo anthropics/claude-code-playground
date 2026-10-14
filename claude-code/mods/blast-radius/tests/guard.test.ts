@@ -43,6 +43,42 @@ function stubEngine(on: On, rmStdout: string) {
   return clock
 }
 
+test('PowerShell paths reach the script only percent-encoded, never as script text', { timeoutMs: 3000 }, async ($, on) => {
+  const clock = mock.clock(on)
+  const seen: string[][] = []
+  on('process.run', async ($: unknown, e: { argv: string[] }) => {
+    if (e.argv[0] === 'sleep') {
+      await clock.sleep(250)
+      return { value: { exitCode: 0, stdout: '', stderr: '' } }
+    }
+    seen.push(e.argv)
+    return { value: { exitCode: 0, stdout: '0 0 0\n', stderr: '' } }
+  })
+  on('session.cwd', () => ({ value: 'C:\\work' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['drawn by Claude Code'] }))
+
+  const hostile = "has space' $(calc) Write-Host PWNED"
+  const call = $.tool.call({ tool: 'PowerShell', command: `Remove-Item -Recurse "${hostile}"` })
+  await clock.settle()
+  const pane = await $.ui.mount(PANE_PROPS)
+  await pane.press({ key: 'cancel' })
+  await clock.advance(250)
+  await call
+
+  const run = seen.find((argv) => argv[0] === 'pwsh' || argv[0] === 'powershell')
+  expect(run).toBeDefined()
+  const script = run![run!.length - 1]
+  const encoded = /UnescapeDataString\('([A-Za-z0-9%\-_.!~*()]+)'\)/.exec(script)
+  expect(encoded).not.toBeNull()
+  expect(JSON.parse(decodeURIComponent(encoded![1]))).toEqual([hostile])
+  expect(script).not.toContain('Write-Host PWNED')
+  // Trailing argv elements would be glued onto the script text by -Command.
+  expect(run!.length).toBe(5)
+})
+
 test('a non-risky Bash command runs normally', async ($, on) => {
   on('tool.call', () => ({ result: 'ran it' }))
 

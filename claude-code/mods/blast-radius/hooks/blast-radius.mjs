@@ -407,22 +407,26 @@ function tokenizePowerShell(text) {
   return words;
 }
 
-/** Runs a PowerShell script via argv, preferring pwsh (the tool's own PS7+ edition), falling
-    back to Windows PowerShell if pwsh isn't on PATH. Script args reach the script only via
-    $args, never interpolated into the script text. */
-async function runPowerShell($, scriptAndArgs, opts) {
+/** Runs a PowerShell script, preferring pwsh (the tool's own PS7+ edition) and falling back to
+    Windows PowerShell if pwsh isn't on PATH. `pwsh -Command` does not fill $args from trailing
+    arguments (it joins them onto the script text), so the values travel as percent-encoded JSON.
+    encodeURIComponent leaves only letters, digits and - _ . ! ~ * ( ) alone, and the quote is
+    escaped by hand, so nothing in a path can end the string literal or run. The script reads
+    them from $inputs. */
+async function runPowerShell($, script, values, opts) {
+  const encoded = encodeURIComponent(JSON.stringify(values)).replace(/'/g, "%27");
+  const full = `$inputs = @(ConvertFrom-Json ([Uri]::UnescapeDataString('${encoded}')))\n${script}`;
   try {
-    return await $.process.run(["pwsh", "-NoProfile", "-NonInteractive", "-Command", ...scriptAndArgs], opts);
+    return await $.process.run(["pwsh", "-NoProfile", "-NonInteractive", "-Command", full], opts);
   } catch {
-    return await $.process.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ...scriptAndArgs], opts);
+    return await $.process.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", full], opts);
   }
 }
 
-// $args[0] holds `dir`; never interpolated into the script text, the same security
-// property as the Bash CD_SCRIPT, which reads $1 the same way. -LiteralPath avoids
-// reading *, ? or [ in the folder name as a wildcard.
+// $inputs[0] holds `dir`, the same security property as the Bash CD_SCRIPT, which reads $1.
+// -LiteralPath avoids reading *, ? or [ in the folder name as a wildcard.
 const CD_SCRIPT_PS = `
-$d = $args[0]
+$d = $inputs[0]
 if ($d -eq "~") { $d = $HOME }
 elseif ($d.StartsWith("~/") -or $d.StartsWith("~\\")) { $d = Join-Path $HOME $d.Substring(2) }
 try { (Resolve-Path -LiteralPath $d -ErrorAction Stop).ProviderPath } catch { exit 1 }
@@ -432,18 +436,17 @@ async function resolveDirPowerShell($, sessionCwd, dir) {
   if (dir === "-") {
     return null; // no `cd -` history stack in PowerShell by default
   }
-  const run = await runPowerShell($, [CD_SCRIPT_PS, dir], { cwd: sessionCwd, timeoutMs: 5000 });
+  const run = await runPowerShell($, CD_SCRIPT_PS, [dir], { cwd: sessionCwd, timeoutMs: 5000 });
   const out = run.stdout.trim();
   return run.exitCode === 0 && out !== "" ? out : null;
 }
 
-// Each target reaches the script only via $args, never interpolated into script
-// text, the same security property as Bash's RM_SCRIPT. A target containing *, ?
-// or [ is expanded as a wildcard; otherwise matched literally, so a path
-// containing those characters isn't misread as a glob.
+// Each target reaches the script only through $inputs, the same security property as
+// Bash's RM_SCRIPT. A target containing *, ? or [ is expanded as a wildcard; otherwise
+// matched literally, so a path containing those characters isn't misread as a glob.
 const RM_SCRIPT_PS = `
 $targets = @()
-foreach ($p in $args) {
+foreach ($p in $inputs) {
   $pp = $p
   if ($pp -eq "~") { $pp = $HOME }
   elseif ($pp.StartsWith("~/") -or $pp.StartsWith("~\\")) { $pp = Join-Path $HOME $pp.Substring(2) }
@@ -465,7 +468,7 @@ async function measureRmPowerShell($, risk, cwd) {
   if (risk.targets.length === 0) {
     return { summary: "Remove-Item with no paths", lines: [], note: "No paths to expand." };
   }
-  const run = await runPowerShell($, [RM_SCRIPT_PS, ...risk.targets], { cwd, timeoutMs: 15000 });
+  const run = await runPowerShell($, RM_SCRIPT_PS, risk.targets, { cwd, timeoutMs: 15000 });
   const [head, ...rest] = run.stdout.split("\n").filter((l) => l !== "");
   const [files, bytes, found] = (head ?? "0 0 0").split(" ").map(Number);
   if (!found) {
