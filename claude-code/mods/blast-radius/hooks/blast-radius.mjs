@@ -469,8 +469,14 @@ async function measureRmPowerShell($, risk, cwd) {
     return { summary: "Remove-Item with no paths", lines: [], note: "No paths to expand." };
   }
   const run = await runPowerShell($, RM_SCRIPT_PS, risk.targets, { cwd, timeoutMs: 15000 });
-  const [head, ...rest] = run.stdout.split("\n").filter((l) => l !== "");
-  const [files, bytes, found] = (head ?? "0 0 0").split(" ").map(Number);
+  const [head, ...rest] = run.stdout.split(/\r?\n/).filter((l) => l !== "");
+  // A failed script prints nothing, which must not read as "no file matches": that would
+  // tell the user a command that deletes files has nothing to delete.
+  if (run.exitCode !== 0 || head === undefined) {
+    const why = run.stderr.trim().slice(0, 200);
+    return { summary: `${risk.label} (could not measure it)`, lines: [], note: why ? `PowerShell could not measure these paths: ${why}` : "PowerShell could not measure these paths." };
+  }
+  const [files, bytes, found] = head.split(" ").map(Number);
   if (!found) {
     return { summary: `delete nothing: no file matches ${risk.targets.join(" ")}`, lines: [], note: "The paths don't exist, so Remove-Item has nothing to remove." };
   }

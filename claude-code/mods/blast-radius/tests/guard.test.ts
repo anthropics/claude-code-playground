@@ -79,6 +79,32 @@ test('PowerShell paths reach the script only percent-encoded, never as script te
   expect(run!.length).toBe(5)
 })
 
+test('a PowerShell measuring failure is reported, not read as nothing to delete', { timeoutMs: 3000 }, async ($, on) => {
+  const clock = mock.clock(on)
+  on('process.run', async ($: unknown, e: { argv: string[] }) => {
+    if (e.argv[0] === 'sleep') {
+      await clock.sleep(250)
+      return { value: { exitCode: 0, stdout: '', stderr: '' } }
+    }
+    return { value: { exitCode: 1, stdout: '', stderr: 'ParserError: unexpected token' } }
+  })
+  on('session.cwd', () => ({ value: 'C:\\work' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['drawn by Claude Code'] }))
+
+  const call = $.tool.call({ tool: 'PowerShell', command: 'Remove-Item -Recurse -Force build' })
+  await clock.settle()
+  const pane = await $.ui.mount(PANE_PROPS)
+  expect(await pane.find({ type: 'Text', text: /could not measure it/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /ParserError/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /delete nothing/ })).toBeUndefined()
+  await pane.press({ key: 'cancel' })
+  await clock.advance(250)
+  await call
+})
+
 test('a non-risky Bash command runs normally', async ($, on) => {
   on('tool.call', () => ({ result: 'ran it' }))
 
