@@ -5,6 +5,7 @@ Claude Code mods: plugins with a hooks module that can change what Claude Code d
 | Mod | What it does |
 | --- | --- |
 | [`blast-radius/`](blast-radius/) | Holds a risky shell command (`rm -rf`, `git reset --hard`, a force push, a migration) and shows what it would change, with Proceed and Cancel buttons. |
+| [`dawa-tools/`](dawa-tools/) | A control panel: pick the model and effort with the mouse, switch mods on and off, and see which model each external harness uses. |
 | [`replay-theater/`](replay-theater/) | Lets you step through the file edits Claude made in the last turn, one diff at a time. |
 | [`token-weather/`](token-weather/) | Draws a live forecast of the context window above the prompt. |
 

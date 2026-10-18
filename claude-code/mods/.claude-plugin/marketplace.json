@@ -13,6 +13,11 @@
       "description": "Holds risky shell commands and shows what they would change, with Proceed and Cancel buttons."
     },
     {
+      "name": "dawa-tools",
+      "source": "./dawa-tools",
+      "description": "Pick the model and effort with the mouse, switch mods on and off, and see which model each external harness uses."
+    },
+    {
       "name": "replay-theater",
       "source": "./replay-theater",
       "description": "Step through the file edits Claude made in the last turn, one diff at a time."

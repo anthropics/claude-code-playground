@@ -115,7 +115,7 @@ No environment variables or configuration.
 - **The chart's bars are relative** to the fullest turn shown, so growth shows even at low fill. The percentage is the absolute figure.
 - **The history resets** when the session starts, or when the plugin reloads.
 - **On a 1M-token window**, ordinary work stays at ☀ for a long time. That's accurate.
-- **One band per session.** Another plugin that draws `AbovePrompt` competes for the same band.
+- **One band per session.** Another plugin that draws `AbovePrompt` competes for the same band. Token Weather calls `next(e)` and stacks under the other band, and dawa-tools does the same, so both show. A plugin that replaces the band without calling `next` still hides the others.
 - **Before the first response**, the band reads 0%, because no response has reported usage yet.
 
 ## Dependencies

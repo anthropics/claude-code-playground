@@ -1,0 +1,2 @@
+# Claude Code writes the mod's TypeScript types here each time it loads the mod.
+.claude-plugin/types/

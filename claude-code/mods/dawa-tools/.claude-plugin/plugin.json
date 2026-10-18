@@ -1,0 +1,15 @@
+{
+  "name": "dawa-tools",
+  "version": "0.1.0",
+  "description": "A control panel above the prompt: pick the model and effort with the mouse, switch other mods on and off, and see which model each external harness (opencode, reasonix) is using.",
+  "author": {
+    "name": "Claude Code DevRel"
+  },
+  "keywords": [
+    "mods",
+    "model",
+    "effort",
+    "harness"
+  ],
+  "types": "./types/index.d.ts"
+}

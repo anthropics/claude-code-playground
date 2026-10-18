@@ -46,12 +46,14 @@ export function register(on) {
     return result;
   });
 
-  on("ui.render", { component: "AbovePrompt" }, ($, e, next) => {
+  on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
     if (e.hasSurvey || readings.length === 0) {
       return next(e);
     }
+    // Stack under any other band (dawa-tools) instead of replacing it.
+    const below = await next(e);
     const { Box, Text } = $.ui.resolve(e);
-    return band(Box, Text, e.bodyColumns ?? 80);
+    return Box({ flexDirection: "column", children: [band(Box, Text, e.bodyColumns ?? 80), below].filter(Boolean) });
   });
 }
 
