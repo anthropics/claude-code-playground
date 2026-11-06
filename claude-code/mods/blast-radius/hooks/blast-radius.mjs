@@ -15,19 +15,39 @@
 // The host reads `on(...)` and `$.noun.method(...)` from source, so they are
 // spelled literally, and helpers that take `$` are top-level functions.
 
+import { evaluate, scratchPattern, settingsFrom, tokenize, DECIDER_URL, deciderRequest, parseDeciderResponse } from "./autoskip.mjs";
+
 const PANE_ID = "blast-radius";
+const DECIDER_TIMEOUT_SECONDS = "8";
 const POLL_SECONDS = "0.25";
-const HOLD_LIMIT_MS = 10 * 60 * 1000;
+const DEFAULT_HOLD_MINUTES = 10;
 const LIST_MAX = 10;
 
 // The call being held, or null. One at a time: Bash calls in a turn run in order.
 let held = null;
 
-export function register(on) {
+export function register(on, options) {
+  const settings = settingsFrom(options ?? {});
+  const holdMinutes = holdMinutesFrom(options ?? {});
   on("tool.call", { tool: "Bash" }, async ($, e, next) => {
     const risk = classify(String(e.command ?? ""));
     if (risk === null) {
       return next(e);
+    }
+    // Opt-in: an rm of temporary files runs without the pane. Decided before
+    // the queue below, so it never waits behind another call's pane.
+    let autoNote = null;
+    if (settings.mode !== "off" && risk.kind === "rm") {
+      try {
+        const verdict = await autoSkip($, String(e.command), e.tool_use_id, settings);
+        if (verdict.skip) {
+          $.ui.toast(`Blast Radius: ran it, ${verdict.reason}`);
+          return next(e);
+        }
+        autoNote = verdict.note;
+      } catch (error) {
+        autoNote = `Auto-skip: the check failed (${String(error?.message ?? error).slice(0, 120)}).`;
+      }
     }
     // One hold at a time. If another risky call is already held (a subagent's,
     // say), wait until it is answered. `held` is claimed with no await between
@@ -52,6 +72,9 @@ export function register(on) {
       mine.report = cwd === null
         ? { summary: `${risk.label} in ${risk.dir}`, lines: [], note: `Couldn't find the folder ${risk.dir}, so I couldn't measure what this would change.` }
         : await measure($, risk, cwd);
+      if (autoNote) {
+        mine.report = { ...mine.report, note: [mine.report.note, autoNote].filter(Boolean).join(" ") };
+      }
       summary = mine.report.summary;
 
       opened = await $.ui.open({ id: PANE_ID, title: "Blast Radius", focus: true, rows: paneRows(mine.report) });
@@ -66,14 +89,15 @@ export function register(on) {
           mine.decision = "interrupted";
           break;
         }
-        if ((await $.clock.now()) - startedAt > HOLD_LIMIT_MS) {
+        if ((await $.clock.now()) - startedAt > holdMinutes * 60 * 1000) {
           mine.decision = "timeout";
           break;
         }
         await $.process.run(["sleep", POLL_SECONDS], { timeoutMs: 5000 });
       }
-    } catch {
+    } catch (error) {
       mine.decision = "error"; // anything unexpected refuses the command
+      mine.error = String(error?.message ?? error).slice(0, 160);
     } finally {
       decision = mine.decision;
       // Close this call's pane before releasing the hold, so the next call's
@@ -97,9 +121,10 @@ export function register(on) {
     }
     const why = {
       cancel: "the user pressed Cancel",
-      timeout: "no answer within 10 minutes",
+      timeout: `no answer within ${holdMinutes === 1 ? "1 minute" : `${holdMinutes} minutes`}`,
       interrupted: "the turn was interrupted",
-      error: "Blast Radius hit an error while holding it",
+      // Seen in practice when the mod was reloaded while a call was held.
+      error: `Blast Radius hit an error while holding it${mine.error ? ` (${mine.error})` : ""}`,
     }[decision] ?? "no answer was recorded";
     return {
       deny: `Blast Radius held this command and did not run it: ${why}. It would have: ${summary}. Do not retry it unless the user asks you to.`,
@@ -136,8 +161,101 @@ function joinDir(dir, arg) {
   return dir ? `${dir}/${arg}` : arg;
 }
 
+/** Every segment of a shell command with its risk (null, { cd }, or a risk), as classify() reads them. */
+export function classifyAll(command) {
+  let dir = null;
+  const scopes = [];
+  const pushed = [];
+  const out = [];
+  for (const raw of command.split(/&&|\|\||;|\||\n/)) {
+    const opens = (raw.match(/^\s*\(+/)?.[0].trim().length) ?? 0;
+    const tail = raw.replace(/(?:\s*(?:\d*>>?|&>>?|<)\s*\S+|\s*&)+\s*$/, "");
+    const closes = (tail.match(/\)+\s*$/)?.[0].trim().length) ?? 0;
+    for (let k = 0; k < opens; k += 1) {
+      scopes.push(dir);
+    }
+    const risk = classifySegment(raw, dir, pushed);
+    out.push({ raw, risk });
+    if (risk !== null && risk.cd !== undefined) {
+      dir = risk.cd;
+    }
+    for (let k = 0; k < closes && scopes.length > 0; k += 1) {
+      dir = scopes.pop();
+    }
+  }
+  return out;
+}
+
+/** How long a held call waits for an answer: the `holdMinutes` option, 1 minute to 24 hours. */
+function holdMinutesFrom(options) {
+  const n = Number(options.holdMinutes);
+  return Number.isFinite(n) && n >= 1 ? Math.min(Math.round(n), 24 * 60) : DEFAULT_HOLD_MINUTES;
+}
+
+// ---- Auto-skip (opt-in) -------------------------------------------------------
+
+async function autoSkip($, command, toolUseId, settings) {
+  const env = await $.process.run(["sh", "-c", 'printf "%s\\n%s\\n%s" "$HOME" "${TMPDIR:-}" "$(id -u)"'], { timeoutMs: 5000 });
+  const [home, tmpdir] = env.stdout.split("\n");
+  const ctx = {
+    mode: settings.mode,
+    threshold: settings.threshold,
+    cwd: await $.session.cwd(),
+    home,
+    tmpdir: tmpdir || "",
+    scratchRe: scratchPattern(await $.session.id()),
+    startedAtMs: (await $.session.usage()).startedAt,
+    run: (argv, init) => $.process.run(argv, { timeoutMs: 15000, ...init }),
+    history: () => earlierToolInputs($, toolUseId),
+    decide: (facts) => askDecider($, settings, facts),
+  };
+  return evaluate(command, classifyAll(command), ctx);
+}
+
+/** The inputs of this session's earlier, answered tool calls, as one text. */
+async function earlierToolInputs($, toolUseId) {
+  const messages = await $.session.messages();
+  const parts = [];
+  for (const message of Array.isArray(messages) ? messages : []) {
+    for (const use of message.toolUses ?? []) {
+      if (use.tool_use_id !== toolUseId && use.text !== undefined) {
+        parts.push(JSON.stringify(use.input ?? {}));
+      }
+    }
+  }
+  return parts.join("\n");
+}
+
+async function askDecider($, settings, facts) {
+  // The option first; else OPENROUTER_API_KEY from the environment Claude Code started with.
+  let apiKey = settings.apiKey;
+  if (apiKey === "") {
+    const env = await $.process.run(["printenv", "OPENROUTER_API_KEY"], { timeoutMs: 5000 });
+    apiKey = env.exitCode === 0 ? env.stdout.trim() : "";
+  }
+  if (apiKey === "") {
+    return { error: "no OpenRouter API key: set openrouterApiKey or OPENROUTER_API_KEY" };
+  }
+  const request = $.http.fetch(DECIDER_URL, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify(deciderRequest(settings.model, facts)),
+  });
+  request.catch(() => {}); // a late failure after the timeout is not an error
+  const timeout = $.process.run(["sleep", DECIDER_TIMEOUT_SECONDS], { timeoutMs: 15000 }).then(() => null);
+  try {
+    const reply = await Promise.race([request, timeout]);
+    if (reply === null) {
+      return { error: `no answer in ${DECIDER_TIMEOUT_SECONDS} s` };
+    }
+    return parseDeciderResponse(reply.status, reply.text);
+  } catch (error) {
+    return { error: String(error?.message ?? error).slice(0, 120) };
+  }
+}
+
 /** The first risky segment of a shell command, or null. */
-function classify(command) {
+export function classify(command) {
   let dir = null; // where a `cd` earlier on the line moved to; null means the session folder
   const scopes = []; // dir to restore when a ( subshell ) closes
   const pushed = []; // pushd stack, for popd
@@ -278,17 +396,6 @@ async function resolveDir($, sessionCwd, dir) {
   const run = await $.process.run(["bash", "-c", CD_SCRIPT, "blast-radius", dir], { cwd: sessionCwd, timeoutMs: 5000 });
   const out = run.stdout.trim();
   return run.exitCode === 0 && out !== "" ? out : null;
-}
-
-/** Splits one segment into words, honouring quotes. Good enough to read flags and paths. */
-function tokenize(text) {
-  const words = [];
-  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    words.push(m[1] ?? m[2] ?? m[3]);
-  }
-  return words;
 }
 
 // ---- Measuring the blast radius -------------------------------------------

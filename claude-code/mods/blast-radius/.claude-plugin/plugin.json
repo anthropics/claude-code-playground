@@ -1,9 +1,47 @@
 {
   "name": "blast-radius",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Holds risky shell commands (rm -rf, git reset --hard, git clean, force push, migrations) and shows what they would change, with Proceed and Cancel buttons.",
   "author": {
     "name": "Claude Code DevRel"
+  },
+  "userConfig": {
+    "holdMinutes": {
+      "type": "number",
+      "title": "Minutes to wait for an answer",
+      "description": "How long a held command waits for Proceed or Cancel before it is refused (1 to 1440).",
+      "default": 10
+    },
+    "autoSkip": {
+      "type": "string",
+      "title": "Skip the pane for temporary files",
+      "description": "off: hold every rm -r/-f (default). rules: run an rm of this session's scratchpad, or of nothing, without the pane. rules+model: also ask a decision model about the rest.",
+      "default": "off",
+      "options": [
+        "off",
+        "rules",
+        "rules+model"
+      ]
+    },
+    "caution": {
+      "type": "string",
+      "title": "How sure the model must be",
+      "description": "low, medium or high (0.8, 0.9, 0.97), or a number from 0 to 1: the model's rating needed to skip the pane.",
+      "default": "medium"
+    },
+    "deciderModel": {
+      "type": "string",
+      "title": "Decision model",
+      "description": "An OpenRouter Decisions model.",
+      "default": "~perplexity/pplx-decider-latest"
+    },
+    "openrouterApiKey": {
+      "type": "string",
+      "title": "OpenRouter API key",
+      "description": "Needed for rules+model. Kept in secure storage.",
+      "sensitive": true,
+      "required": false
+    }
   },
   "keywords": [
     "mods",
