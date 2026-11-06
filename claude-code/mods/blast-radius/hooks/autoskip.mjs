@@ -170,6 +170,99 @@ function resolveWord(word, env, base) {
 }
 
 /**
+ * The text with what quotes hold made inert: single-quoted text blanked, and
+ * `|;&<>` and backticks blanked inside double quotes, except within `$(...)`,
+ * which runs commands of its own.
+ */
+function maskQuoted(text) {
+  const stack = [{ kind: "top", parens: 0 }];
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    const frame = stack[stack.length - 1];
+    if (frame.kind === "sq") {
+      if (c === "'") {
+        stack.pop();
+        out += c;
+      } else {
+        out += " ";
+      }
+      continue;
+    }
+    if (c === "$" && text[i + 1] === "(") {
+      stack.push({ kind: "sub", parens: 0 });
+      out += "$(";
+      i++;
+      continue;
+    }
+    if (frame.kind === "dq") {
+      if (c === '"') {
+        stack.pop();
+        out += c;
+      } else {
+        out += /[|;&<>`]/.test(c) ? " " : c;
+      }
+      continue;
+    }
+    if (c === "'") {
+      stack.push({ kind: "sq" });
+    } else if (c === '"') {
+      stack.push({ kind: "dq" });
+    } else if (frame.kind === "sub" && c === "(") {
+      frame.parens++;
+    } else if (frame.kind === "sub" && c === ")") {
+      if (frame.parens > 0) {
+        frame.parens--;
+      } else {
+        stack.pop();
+      }
+    }
+    out += c;
+  }
+  return out;
+}
+
+/**
+ * Every word in command position: the segment's first, and the first inside
+ * each `$(`, backtick and pipe, past `do`/`then`/`else`. A quoted or odd word
+ * is kept as written, so it reads as not harmless.
+ */
+function commandWords(text) {
+  text = maskQuoted(text);
+  const words = [];
+  const start = /(?:^|(?<=\$\()|(?<=[|`;&]))\s*(?:(?:do|then|else|!)\s+)*([^\s()|;&`<>]+)/g;
+  for (const m of text.matchAll(start)) {
+    words.push(m[1]);
+  }
+  return words;
+}
+
+/**
+ * Whether earlier segments write `word` with a redirect (`> f`, `2> f`, `>> f`)
+ * and otherwise only read it with harmless commands: then the file the rm
+ * removes is output of this same command line, whatever else the line runs.
+ */
+function writtenByRedirect(word, segments) {
+  if (!PLAIN_PATH.test(word) || /[*?]/.test(word)) {
+    return false;
+  }
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const mention = new RegExp(`(^|[^A-Za-z0-9._/~-])${escaped}(?=$|[^A-Za-z0-9._/-])`, "g");
+  const target = /(^|[^<>])(\d|&)?>>?\s*["']?$/;
+  let written = false;
+  for (const { raw, harmless } of segments) {
+    for (const m of raw.matchAll(mention)) {
+      if (target.test(raw.slice(0, m.index + m[1].length))) {
+        written = true;
+      } else if (!harmless) {
+        return false; // used by a command that could put something else there
+      }
+    }
+  }
+  return written;
+}
+
+/**
  * Reads the command line: each rm with its targets resolved where possible,
  * and whether everything before the last rm is harmless.
  * `segments` is classifyAll()'s output: [{ raw, risk }].
@@ -184,6 +277,7 @@ export function readCommand(command, segments, { cwd, home, tmpdir }) {
   let harmlessBeforeLastRm = true;
   const quoteAt = quoteTracker();
   const seen = []; // raw segments so far, for "named earlier in this command"
+  const earlierSegments = []; // { raw, harmless }, for "written by a redirect"
   let before = "";
   for (const { raw, risk } of segments) {
     const earlierText = seen.join(" ; ");
@@ -191,6 +285,8 @@ export function readCommand(command, segments, { cwd, home, tmpdir }) {
     const text = unwrap(raw);
     const assigned = assignments(text);
     const starts = quoteAt(raw);
+    const commands = commandWords(text);
+    earlierSegments.push({ raw, harmless: !starts.inQuote && commands.length > 0 && commands.every((w) => HARMLESS.has(w)) });
     if (risk !== null && risk.kind === "rm") {
       remote ||= starts.remote;
       harmlessBeforeLastRm = harmlessSoFar;
@@ -210,7 +306,10 @@ export function readCommand(command, segments, { cwd, home, tmpdir }) {
         const used = name !== undefined
           ? new RegExp(`\\$\\{?${name}\\b`).test(earlierText)
           : earlierText.includes(clean) || (path !== null && earlierText.includes(path));
-        return { word: clean, path, earlier: used, expression: path === null && name !== undefined ? exprs[name] ?? null : null };
+        return {
+          word: clean, path, earlier: used, expression: path === null && name !== undefined ? exprs[name] ?? null : null,
+          madeByRedirect: path !== null && writtenByRedirect(clean, earlierSegments.slice(0, -1)),
+        };
       });
       before = earlierText;
       rms.push({ raw: text, label: risk.label, targets });
@@ -279,7 +378,9 @@ done
 `;
 
 // For each existing path: kind, file count, size in KB, whether git tracks or
-// ignores it, and the oldest birth time among it and its first 2000 entries.
+// ignores it, the oldest birth time among it and its first 2000 entries, and,
+// for a folder that is itself a git checkout, whether it could be cloned again:
+// a remote, and no uncommitted, unpushed or stashed work.
 export const FACTS_SCRIPT = `
 if [[ "$(uname)" = Darwin ]]; then fmt=(-f %B); else fmt=(-c %W); fi
 for p in "$@"; do
@@ -294,8 +395,17 @@ for p in "$@"; do
     git -C "$d" check-ignore -q -- "$b" 2>/dev/null && ignored=1
   fi
   oldest=$( { printf '%s\\n' "$p"; find "$p" -mindepth 1 2>/dev/null | head -n 2000; } | tr '\\n' '\\0' | xargs -0 stat "\${fmt[@]}" 2>/dev/null | sort -n | head -n 1)
-  sample=""; [[ "$kind" = dir ]] && sample=$(cd -- "$p" 2>/dev/null && find . -type f 2>/dev/null | head -n 5 | sed 's|^\\./||' | tr '\\n\\t' '|  ')
-  printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$p" "$kind" "$files" "\${kb:-0}" "$tracked" "$ignored" "$inrepo" "\${oldest:-0}" "$sample"
+  sample=""; [[ "$kind" = dir ]] && sample=$(cd -- "$p" 2>/dev/null && find . -path ./.git -prune -o -type f -print 2>/dev/null | head -n 5 | sed 's|^\\./||' | tr '\\n\\t' '|  ')
+  checkout=""
+  if [[ "$kind" = dir && -e "$p/.git" ]]; then
+    remote=0; [[ -n "$(git -C "$p" remote 2>/dev/null)" ]] && remote=1
+    changes=$(git -C "$p" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+    unpushed=$(git -C "$p" log --branches --not --remotes --oneline 2>/dev/null | wc -l | tr -d ' ')
+    stashes=$(git -C "$p" stash list 2>/dev/null | wc -l | tr -d ' ')
+    ign=$(git -C "$p" status --porcelain --ignored 2>/dev/null | sed -n 's/^!! //p' | head -n 5 | tr '\\n\\t' '|  ')
+    checkout="$remote;$changes;$unpushed;$stashes;$ign"
+  fi
+  printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$p" "$kind" "$files" "\${kb:-0}" "$tracked" "$ignored" "$inrepo" "\${oldest:-0}" "$sample" "$checkout"
 done
 `;
 
@@ -310,16 +420,33 @@ async function resolvePaths(run, cwd, paths) {
   });
 }
 
+/** The git checkout part of a FACTS_SCRIPT line, or null. */
+function checkoutOf(field) {
+  if (field === "") {
+    return null;
+  }
+  const [remote, changes, unpushed, stashes, ignored = ""] = field.split(";");
+  const names = ignored.split("|").filter(Boolean).map((name) => name.slice(0, 80));
+  return {
+    has_remote: remote === "1",
+    uncommitted_changes: Number(changes),
+    unpushed_commits: Number(unpushed),
+    stashes: Number(stashes),
+    ...(names.length > 0 ? { ignored_entries: names } : {}),
+  };
+}
+
 async function factsOf(run, cwd, paths) {
   if (paths.length === 0) {
     return [];
   }
   const out = await run(["bash", "-c", FACTS_SCRIPT, "blast-radius", ...paths], { cwd });
   return out.stdout.split("\n").filter((l) => l !== "").map((l) => {
-    const [path, kind, files, kb, tracked, ignored, inrepo, oldest, sample = ""] = l.split("\t");
+    const [path, kind, files, kb, tracked, ignored, inrepo, oldest, sample = "", checkout = ""] = l.split("\t");
     return {
       path, kind, files: Number(files), kb: Number(kb), tracked: tracked === "1", ignored: ignored === "1", inRepo: inrepo === "1",
       oldestBirth: Number(oldest), sample: sample.split("|").filter(Boolean).map((name) => name.slice(0, 80)),
+      checkout: checkoutOf(checkout),
     };
   });
 }
@@ -407,6 +534,9 @@ export const PROMPT = {
     "paths_that_do_not_exist: nothing is there to delete.",
     "paths_not_resolved: written with shell expressions the tool did not run; variable_set_to is the expression " +
       "the variable was set to.",
+    "git_checkout: the folder is itself a git repository. has_remote: there is a remote it can be cloned from " +
+      "again. uncommitted_changes, unpushed_commits, stashes: work in it that no remote has. ignored_entries: up to " +
+      "five names git ignores there, which a fresh clone would not bring back.",
     "where: on another machine only the command text is known, not the files.",
   ].join("\n"),
 };
@@ -416,7 +546,8 @@ export const DISPOSABLE_QUESTION = {
   instructions:
     "Every path this deletion removes is disposable: a temporary or scratch file, a cache, build output, " +
     "regenerable dependencies, or something this same session created for its own use and is now cleaning up. " +
-    "Deleting them loses nothing a person wrote or would want back: no source code, documents, notes, " +
+    "Deleting them loses nothing a person wrote or would want back: no source code (a git checkout that can be " +
+    "cloned again, with nothing uncommitted, unpushed or stashed, loses no source code), documents, notes, " +
     "configuration, secrets, backups or data, and nothing that existed before the session started unless it is a cache.",
 };
 
@@ -484,7 +615,7 @@ export async function evaluate(command, segments, ctx) {
     why = "the command has a heredoc";
   } else if (!resolvable) {
     why = "a path can't be read without running the shell";
-  } else if (!read.harmlessBefore) {
+  } else if (!read.harmlessBefore && !targets.every((t) => t.madeByRedirect)) {
     why = "something before the rm could change the paths";
   }
   // With ctx.askAnyway (the live model test), each stop below is recorded in
@@ -545,6 +676,7 @@ export async function evaluate(command, segments, ctx) {
       files: f.files,
       size_kb: f.kb,
       ...(f.sample.length > 0 ? { sample_files: f.sample } : {}),
+      ...(f.checkout ? { git_checkout: f.checkout } : {}),
       in_git_repo: f.inRepo,
       tracked_by_git: f.tracked,
       ignored_by_git: f.ignored,

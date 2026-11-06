@@ -102,6 +102,21 @@ describe("facts", () => {
     assert.equal(seen["t27-moved-old-file"].created_after_session_start, false, "mv keeps the old birth time");
   });
 
+  test("a folder that is a git checkout says whether it could be cloned again", async () => {
+    const seen = {};
+    for (const id of ["s19-own-clone", "t31-clone-with-uncommitted-fix", "t32-clone-with-unpushed-commit"]) {
+      await decideFor(CASES.find((c) => c.id === id), "rules+model", (facts) => {
+        seen[id] = facts.paths[0];
+        return { p: 0 };
+      });
+    }
+    assert.deepEqual(seen["s19-own-clone"].git_checkout, { has_remote: true, uncommitted_changes: 0, unpushed_commits: 0, stashes: 0 });
+    assert.ok(!seen["s19-own-clone"].sample_files.some((name) => name.startsWith(".git/")), "no .git internals in the sample");
+    assert.equal(seen["t31-clone-with-uncommitted-fix"].git_checkout.uncommitted_changes, 1);
+    assert.equal(seen["t32-clone-with-unpushed-commit"].git_checkout.unpushed_commits, 1);
+    assert.equal(seen["t32-clone-with-unpushed-commit"].git_checkout.uncommitted_changes, 0);
+  });
+
   test("remote paths are described as remote and not resolved", async () => {
     let facts;
     await decideFor(CASES.find((c) => c.id === "s17-remote-acme-probe"), "rules+model", (f) => {

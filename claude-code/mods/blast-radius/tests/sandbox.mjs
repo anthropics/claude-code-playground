@@ -63,8 +63,28 @@ export function buildSandbox() {
   write(path.join(home, "Library/Caches/com.example.tool/blob"), "c\n", { old: true });
   write(path.join(home, "projects-archive/2023/client-site/index.html"), "<html>\n", { old: true });
 
+  // A remote to clone from: a bare repository with one commit.
+  const lib = path.join(root, "remote", "lib-src");
+  const gitIn = (dir, ...args) => execFileSync("git", ["-C", dir, "-c", "user.email=t@example.com", "-c", "user.name=t", ...args], { stdio: "ignore" });
+  for (const [file, text] of [["README.md", "# lib\n"], ["src/lib.py", "def f():\n    return 1\n"], ["tests/test_lib.py", "def test_f():\n    pass\n"], [".pylintrc", "[MAIN]\n"]]) {
+    write(path.join(lib, file), text);
+  }
+  gitIn(lib, "init", "-q");
+  gitIn(lib, "add", "-A");
+  gitIn(lib, "commit", "-qm", "init");
+  execFileSync("git", ["clone", "-q", "--bare", lib, path.join(root, "remote", "lib.git")], { stdio: "ignore" });
+
   // The session starts here.
   const startedAtMs = Date.now() - 2000;
+
+  // Clones the session made: untouched, with an uncommitted edit, with an unpushed commit.
+  for (const name of ["gt-clean", "gt-dirty", "gt-unpushed"]) {
+    execFileSync("git", ["clone", "-q", path.join(root, "remote", "lib.git"), path.join(repo, "tmp", name)], { stdio: "ignore" });
+  }
+  write(path.join(repo, "tmp/gt-dirty/src/lib.py"), "def f():\n    return 2  # the fix\n");
+  write(path.join(repo, "tmp/gt-unpushed/src/new_feature.py"), "def g():\n    return 3\n");
+  gitIn(path.join(repo, "tmp/gt-unpushed"), "add", "-A");
+  gitIn(path.join(repo, "tmp/gt-unpushed"), "commit", "-qm", "new feature");
 
   // Created by the session.
   for (const file of [
