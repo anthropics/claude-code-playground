@@ -40,7 +40,7 @@ With `rules+model`, a command that the rules don't settle goes to an [OpenRouter
 
 An `rm` on another machine (inside `ssh '...'`, `docker exec` or `kubectl exec`) goes through the same steps. The paths there can't be checked from here, so the rules never skip it and only the path checks above apply before the model is asked.
 
-If the model doesn't answer within 8 seconds, or rates the paths below the threshold, the pane opens as usual, with the model's rating in its note. When the pane is skipped, a toast says why.
+If the model doesn't answer within 8 seconds, or rates the paths below the threshold, the pane opens as usual, with the model's rating in its note. With `autoSkip` on, each rm decision also leaves a dim line in the transcript, which the model doesn't read: `ran without the pane, <reason>` or `held for the pane, <reason>`, followed by the command. A toast also appears when the pane is skipped.
 
 Set the options in `/config`, or in `settings.json` under `pluginConfigs`:
 

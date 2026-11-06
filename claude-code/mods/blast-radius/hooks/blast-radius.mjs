@@ -42,12 +42,16 @@ export function register(on, options) {
         const verdict = await autoSkip($, String(e.command), e.tool_use_id, settings);
         if (verdict.skip) {
           $.ui.toast(`Blast Radius: ran it, ${verdict.reason}`);
+          $.ui.log(`Blast Radius: ran without the pane, ${verdict.reason}: ${oneLine(e.command)}`);
           return next(e);
         }
         autoNote = verdict.note;
       } catch (error) {
         autoNote = `Auto-skip: the check failed (${String(error?.message ?? error).slice(0, 120)}).`;
       }
+      // A dim transcript line the model never reads, so each decision stays visible.
+      const why = (autoNote ?? "").replace(/^Auto-skip: /, "").replace(/\.$/, "") || "it has another risky part";
+      $.ui.log(`Blast Radius: held for the pane, ${why}: ${oneLine(e.command)}`);
     }
     // One hold at a time. If another risky call is already held (a subagent's,
     // say), wait until it is answered. `held` is claimed with no await between
@@ -187,6 +191,12 @@ export function classifyAll(command) {
 }
 
 /** How long a held call waits for an answer: the `holdMinutes` option, 1 minute to 24 hours. */
+/** The command on one line, cut to fit a transcript notice. */
+function oneLine(command) {
+  const flat = String(command ?? "").replace(/\s+/g, " ").trim();
+  return flat.length > 160 ? `${flat.slice(0, 159)}…` : flat;
+}
+
 function holdMinutesFrom(options) {
   const n = Number(options.holdMinutes);
   return Number.isFinite(n) && n >= 1 ? Math.min(Math.round(n), 24 * 60) : DEFAULT_HOLD_MINUTES;

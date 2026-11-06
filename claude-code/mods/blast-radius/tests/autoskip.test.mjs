@@ -129,12 +129,14 @@ describe("settings", () => {
 });
 
 describe("autoSkip off is the old mod", () => {
-  test("classify() reads every case as the committed version does", async () => {
+  test("classify() reads every case as the version before auto-skip does", async () => {
     const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: HERE, encoding: "utf8" }).trim();
     const rel = path.relative(root, path.join(HERE, "../hooks/blast-radius.mjs"));
-    const old = execFileSync("git", ["show", `HEAD:${rel}`], { cwd: root, encoding: "utf8" });
+    // The commit that added autoskip.mjs; its parent holds the mod as it was.
+    const added = execFileSync("git", ["log", "--format=%H", "--diff-filter=A", "-1", "--", path.join(HERE, "../hooks/autoskip.mjs")], { cwd: root, encoding: "utf8" }).trim();
+    const old = execFileSync("git", ["show", `${added ? `${added}^` : "HEAD"}:${rel}`], { cwd: root, encoding: "utf8" });
     const file = path.join(box.root, "old-blast-radius.mjs");
-    fs.writeFileSync(file, `${old}\nexport { classify };\n`);
+    fs.writeFileSync(file, /export function classify\b/.test(old) ? old : `${old}\nexport { classify };\n`);
     const { classify: oldClassify } = await import(file);
     for (const c of CASES) {
       const command = fill(c.command, box);
@@ -164,6 +166,23 @@ describe("autoSkip off is the old mod", () => {
     assert.equal(ran.length, 1);
     assert.ok(!calls.includes("ui.open"));
     assert.ok(calls.some((c) => c.startsWith("toast:")));
+    assert.ok(calls.some((c) => c.startsWith("log:Blast Radius: ran without the pane, nothing to delete: rm -rf ")));
+  });
+
+  test("with autoSkip=rules a held rm says why in the transcript", async () => {
+    const calls = [];
+    const hook = hookOf({ autoSkip: "rules" });
+    const result = await hook(fake$(calls), { command: "rm -rf src", tool_use_id: "t1" }, abortedNext());
+    assert.ok(result.deny);
+    const line = calls.find((c) => c.startsWith("log:"));
+    assert.match(line, /^log:Blast Radius: held for the pane, .*outside this session's scratchpad: rm -rf src$/);
+  });
+
+  test("with autoSkip=off nothing is written to the transcript", async () => {
+    const calls = [];
+    const hook = hookOf({});
+    await hook(fake$(calls), { command: "rm -rf src", tool_use_id: "t1" }, abortedNext());
+    assert.ok(!calls.some((c) => c.startsWith("log:")));
   });
 });
 
@@ -207,6 +226,7 @@ function fake$(calls) {
       close: async () => {},
       invalidate: () => {},
       toast: (text) => calls.push(`toast:${text}`),
+      log: (text) => calls.push(`log:${text}`),
     },
     http: { fetch: async () => assert.fail("no network in offline tests") },
   };
