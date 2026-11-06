@@ -499,8 +499,15 @@ export async function evaluate(command, segments, ctx) {
     if (why === null) {
       const outside = resolved.filter((r) => r.exists && !ctx.scratchRe.test(r.path));
       if (outside.length === 0) {
+        // Checked before the command runs, so a path made earlier in the same
+        // line (after only harmless commands) doesn't exist yet.
         const existing = resolved.filter((r) => r.exists).length;
-        if (stop({ skip: true, reason: existing === 0 ? "nothing to delete" : "only this session's scratchpad" })) {
+        const reason = existing > 0
+          ? "only this session's scratchpad"
+          : targets.some((t) => t.earlier)
+            ? "it deletes only what the same command makes first"
+            : "nothing to delete";
+        if (stop({ skip: true, reason })) {
           return stoppedBy;
         }
       } else {

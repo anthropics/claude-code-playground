@@ -169,6 +169,16 @@ describe("autoSkip off is the old mod", () => {
     assert.ok(calls.some((c) => c.startsWith("log:Blast Radius: ran without the pane, nothing to delete: rm -rf ")));
   });
 
+  test("an rm of what the same command makes says so, not 'nothing to delete'", async () => {
+    const calls = [];
+    const hook = hookOf({ autoSkip: "rules" });
+    const next = () => ({ ok: true });
+    next.signal = { aborted: false };
+    const command = `D=${box.scratch}/made-here; mkdir -p "$D/sub" && touch "$D/sub/f.txt" && rm -rf "$D"`;
+    await hook(fake$(calls), { command, tool_use_id: "t1" }, next);
+    assert.ok(calls.some((c) => c.startsWith("log:Blast Radius: ran without the pane, it deletes only what the same command makes first: ")), calls.join("\n"));
+  });
+
   test("with autoSkip=rules a held rm says why in the transcript", async () => {
     const calls = [];
     const hook = hookOf({ autoSkip: "rules" });
