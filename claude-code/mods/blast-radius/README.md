@@ -18,6 +18,42 @@ When Claude calls Bash with one of the commands below, Blast Radius stops the ca
 
 Every other command runs as normal. If the command line moves first, with `cd dir &&`, `pushd`/`popd` or `git -C dir`, Blast Radius measures in that folder. A `cd` inside `( ... )` only applies inside the parentheses, as in the shell.
 
+### Optional: skip the pane for temporary files
+
+Claude often cleans up after itself, for example with `rm -rf` on its own scratchpad folder, and a pane for each of those gets in the way. The `autoSkip` option, off by default, lets those run without the pane:
+
+| `autoSkip` | What runs without the pane |
+|---|---|
+| `off` (default) | Nothing. Every `rm -r` and `rm -f` is held, as above. |
+| `rules` | An `rm` whose paths are all inside this session's scratchpad (`/tmp/claude-<uid>/<project>/<session id>/`), or don't exist. |
+| `rules+model` | Also any other `rm` that a decision model rates as disposable, with at least the `caution` threshold. |
+
+The rules only skip when every `rm` on the line passes. Each path must be plain text after `$VAR` and `~` expansion, with no `$(...)`, braces or heredoc. Symlinks are resolved first, and before the `rm` the line may only run commands that read or write plain files (`cd`, `mkdir`, `grep`, `jq`, `curl`, `ssh` and the like). One exception: a file that doesn't exist yet, that the line writes with a redirect (`> f`, `2> f`, `>> f`) and otherwise only reads, with `< f` (a `while read ... done < f` loop too) or with such commands, including inside `$(...)` and pipes, is output of the line itself, so its `rm` runs whatever else the line runs.
+
+With `rules+model`, a command that the rules don't settle goes to an [OpenRouter Decisions](https://openrouter.ai/docs/guides/community/multimodal-decisions) model (`~perplexity/pplx-decider-latest` by default). The request holds facts, not the command text: for each path its size, file count, up to five file names inside it, whether git tracks or ignores it, whether it was created after the session started (by birth time), for a folder that is itself a git checkout whether it has a remote and any uncommitted, unpushed or stashed work, whether earlier tool calls in the session named it, and whether the same command line used it before deleting it. A short legend tells the model what each fact means. Comments and the rest of the line are not sent. Some deletions are never sent to the model and always get the pane:
+
+- top-level folders, such as `/usr`, `~`, `~/code` and `~/code/project`;
+- `.git`, `.env`, `.ssh`, secrets, backups, `.sql` dumps and migrations;
+- anything git tracks;
+- more than 100 MB or 5,000 files;
+- paths written with `..` or braces that can't be resolved without the shell.
+
+An `rm` on another machine (inside `ssh '...'`, `docker exec` or `kubectl exec`) goes through the same steps. The paths there can't be checked from here, so the rules never skip it and only the path checks above apply before the model is asked.
+
+If the model doesn't answer within 8 seconds, or rates the paths below the threshold, the pane opens as usual, with the model's rating in its note. With `autoSkip` on, each rm decision also leaves a dim line in the transcript, which the model doesn't read: `ran without the pane, <reason>` or `held for the pane, <reason>`, followed by the command. A toast also appears when the pane is skipped.
+
+Set the options in `/config`, or in `settings.json` under `pluginConfigs`:
+
+| Option | Values | Default |
+|---|---|---|
+| `holdMinutes` | how long a held command waits for Proceed or Cancel, 1 to 1440 | `10` |
+| `autoSkip` | `off`, `rules`, `rules+model` | `off` |
+| `caution` | `low` (0.8), `medium` (0.9), `high` (0.97), or a number from 0 to 1 | `medium` |
+| `deciderModel` | an OpenRouter Decisions model | `~perplexity/pplx-decider-latest` |
+| `openrouterApiKey` | your OpenRouter key, kept in secure storage. If unset, `OPENROUTER_API_KEY` from the environment Claude Code started with | none |
+
+To set the key from a shell: `echo '{"openrouterApiKey":"sk-or-..."}' | claude plugin configure blast-radius --values-stdin`.
+
 The patterns it demonstrates:
 
 - Holding a `tool.call` until the user answers, and returning `{ deny }` with a reason Claude can act on.
@@ -44,7 +80,7 @@ The second try, after Proceed:
 
 ## How it was built
 
-- **Model:** built with Claude in Claude Code. The test runs and screenshots used Claude Sonnet 5. The mod itself doesn't call a model.
+- **Model:** built with Claude in Claude Code. The test runs and screenshots used Claude Sonnet 5. The mod calls a model only with `autoSkip` set to `rules+model`: an OpenRouter Decisions model, `~perplexity/pplx-decider-latest` by default.
 - **Prompt(s):** the mod started as one of ten ideas Claude wrote for mods. This is the idea as written:
 
   > **Blast Radius.** _See what a command will touch, before it runs._ When Claude runs a risky shell command, like `rm`, `git reset`, or a migration, the mod opens a pane. The pane lists the files and branches the command would change. The developer presses Proceed, or Cancel. It uses `tool.call` to hold the call, and `ui.render` on `Pane`, with `Button` elements. It adds a safety check, and it doesn't remove any, so it's safe to show. _A bigger project,_ because each command needs its own dry run.
@@ -59,6 +95,10 @@ The second try, after Proceed:
   - A pane needs room. In a narrow terminal Claude Code doesn't place it, so the mod checks `isPlaced` and draws the report in the `AbovePrompt` band instead.
   - Cancel has the focus when the pane opens, so pressing Enter refuses the command rather than running it.
   - An independent review before release found two problems in the measuring step, both fixed. A file named like a `find` action (for example `-delete`) that a glob matched could be read as an action while measuring, so relative paths now go to `find` with `./` in front. And a `cd` earlier on the command line was ignored, so the wrong folder was measured; the mod now follows `cd` and `git -C`. The same review led to smaller fixes: overlapping holds are queued, and the buttons always answer the command shown; an error while holding refuses the command; `git clean -e`, `src:dst` and `HEAD` force pushes are measured correctly; and sizes use `du -k`, which works on macOS as well as Linux.
+  - Auto-skip came later, after a few days of use: most held commands were Claude removing its own scratch files. Its tests first ran 63 cases in a file tree with tracked, ignored, old and new files: 18 modelled on real sessions, 30 built to get past simple rules, and 15 held out. The prompt was not tuned on the held-out cases.
+  - The first live run looked bad: the model rated `/`, `~/code` and `.env` as disposable. The cause was the test, not the model. Paths that the floor checks stop were sent with no facts at all, so the model was rating an empty list. After that fix, the prompt went through six versions against `~perplexity/pplx-decider-latest` (Decider v1.2). Run-to-run noise was small: ±0.006 on average, ±0.05 at most. Two changes helped most. The first added facts: the file names inside a folder, and whether the same command used the path before deleting it. The second was a legend that says what each fact means. Adding true/false criteria made the model worse on the known cases and was dropped.
+  - With the final prompt, the model on its own rated no dangerous case above 0.35 on the known cases, or above 0.04 on the held-out ones. The one exception is a link the same line creates, which doesn't exist yet when the model is asked; a rule catches that case first. At `medium` it rated 18 of 21 known and 6 of 8 held-out temporary cases as disposable. Answers took 0.6 to 4 seconds. Paths on another machine and paths the shell would have to work out get lower ratings, so they get the pane more often.
+  - After a few more days of use, two kinds of command still got the pane needlessly. A git clone the session made in the project's `tmp/` was rated 0.83 to 0.88: its files look like source code, which the question rules out. A new fact says whether a folder that is a git checkout could be cloned again. A first rewording of the question, saying source code is lost only when work isn't committed and pushed, made the model softer on every dangerous case (tracked files, migrations and config rose from about 0 to 0.5 to 0.7), so it was dropped for one narrow exception for clean checkouts. With it, the session's own clone rates 0.98, a clone with an unpushed commit 0.10 and one with an uncommitted fix 0.74, and no dangerous case the model is asked about rates above 0.74. The other kind was timing loops that write `2> tmp/t.txt` and delete it at the end, now settled by the redirect rule above. A loop fed with `done < f` was still held until reading with `<` counted as a read whatever the loop runs. Case count is now 72.
   - Tested in Claude Code, before those fixes: `rm -rf build` was held for more than 30 seconds, Cancel kept the files and Proceed deleted them; `git reset --hard` listed the two changed files and Cancel kept them; `git clean -fdx` was held. Force pushes and migrations were checked against the command classifier only, not run. The fixes are covered by tests of the classifier, the measuring step and the hold queue, run with Node against a stand-in for Claude Code; they haven't been re-run in a live session.
 
 ## Run it
@@ -69,7 +109,9 @@ The second try, after Proceed:
 - `bash`, `git`, `find` and `du` on your `PATH`. For migrations, the project's own tool (for example `python3 manage.py showmigrations`).
 - For the side pane, a terminal about 144 columns wide or more. Narrower terminals get the band above the prompt.
 
-No environment variables or configuration.
+No configuration is needed; the options are described above. The optional auto-skip (see above) is off by default. Its `rules+model` mode needs an [OpenRouter](https://openrouter.ai) API key and sends requests to OpenRouter, which cost a small amount per request.
+
+**Tests:** from this folder, `node --test tests/autoskip.test.mjs` runs the offline tests (Node 20 or later, no network). `DECIDER_LIVE=1 OPENROUTER_API_KEY=... node --test tests/decider.live.test.mjs` sends each test case to the model once and prints its ratings. That run costs well under a cent.
 
 **Steps:**
 
@@ -107,7 +149,7 @@ No environment variables or configuration.
 
 - Press `1` for Proceed or `2` for Cancel. You can also click a button, or Tab to it and press Enter.
 - In the band above the prompt, `1` or `2` works while the input is empty.
-- If nobody answers within 10 minutes, the command is refused.
+- If nobody answers within 10 minutes, the command is refused. Set `holdMinutes` to wait longer (up to 24 hours).
 - If you interrupt the turn (Esc), the command is refused.
 
 ## Notes / limitations
@@ -115,7 +157,7 @@ No environment variables or configuration.
 - It reads the command text. It doesn't parse shell fully: `$(...)`, aliases, `eval`, `bash -c "..."`, `xargs rm`, `find -delete`, scripts that call `rm`, and wrappers such as `timeout 5 rm`, `doas rm`, `time -p rm` or `env -i rm` aren't caught.
 - Only the first risky part of a command line is measured, and the pane shows the command on one line, cut off if it's long. Proceed runs the whole line as written.
 - It follows `cd`, `pushd`, `popd` and `git -C` on the same line. `cd -`, and a folder that doesn't exist, can't be measured; the pane says so and still holds the command. Otherwise it starts from the session's working folder.
-- In a narrow terminal the report is drawn in the band above the prompt, which only one mod can use at a time. If another mod that draws there (such as Replay Theater or Token Weather in this folder) takes the band, the Proceed and Cancel buttons may not show, and the command is refused after 10 minutes. Use a wider terminal, or turn the other mod off, when you rely on Blast Radius.
+- In a narrow terminal the report is drawn in the band above the prompt, which only one mod can use at a time. If another mod that draws there (such as Replay Theater or Token Weather in this folder) takes the band, the Proceed and Cancel buttons may not show, and the command is refused after `holdMinutes` (10 minutes by default). Use a wider terminal, or turn the other mod off, when you rely on Blast Radius.
 - One command is held at a time. A second risky call, from a subagent for example, waits until the first is answered.
 - It only watches the Bash tool. File edits and other tools aren't held.
 - The `rm` count is approximate: a path matched twice is counted twice, and a file name with a line break is not counted. The list shows the first 10 files. Counts come from `find` and sizes from `du -k`, so a size is the space on disk, to the nearest kilobyte. A very large tree can take a few seconds to measure.
@@ -124,6 +166,8 @@ No environment variables or configuration.
 - A few harmless commands are held too, such as a commit whose message contains `; rm -rf`.
 - It checks one command at a time. It holds a call, but it doesn't sandbox it: after you press Proceed, the command runs as written.
 - This is a safety net, not a permission system. Use [permission rules](https://code.claude.com/docs/en/settings) for a hard block.
+- Auto-skip makes the net looser, by design. The rules can't follow a path that a script, `cp`, `mv`, `ln` or `tar` changes earlier on the same line, so those lines go to the model or the pane. The model sees only facts about the paths, and it can be wrong. Use `rules`, or a higher `caution`, if that matters more than fewer panes.
+- If the mod is reloaded while a command is held (for example after a plugin update), the hold ends with an error and the command is refused. The refusal now says why.
 
 ## Dependencies
 
