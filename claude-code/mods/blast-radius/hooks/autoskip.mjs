@@ -239,8 +239,10 @@ function commandWords(text) {
 
 /**
  * Whether earlier segments write `word` with a redirect (`> f`, `2> f`, `>> f`)
- * and otherwise only read it with harmless commands: then the file the rm
- * removes is output of this same command line, whatever else the line runs.
+ * and otherwise only read it, with `< f` or with harmless commands: then the
+ * file the rm removes is output of this same command line, whatever else the
+ * line runs. `< f` is opened by the shell, so it reads even when the command
+ * (or a whole `while ... done < f` loop) is not harmless.
  */
 function writtenByRedirect(word, segments) {
   if (!PLAIN_PATH.test(word) || /[*?]/.test(word)) {
@@ -249,12 +251,14 @@ function writtenByRedirect(word, segments) {
   const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const mention = new RegExp(`(^|[^A-Za-z0-9._/~-])${escaped}(?=$|[^A-Za-z0-9._/-])`, "g");
   const target = /(^|[^<>])(\d|&)?>>?\s*["']?$/;
+  const input = /(^|[^<])\d?<\s*["']?$/;
   let written = false;
   for (const { raw, harmless } of segments) {
     for (const m of raw.matchAll(mention)) {
-      if (target.test(raw.slice(0, m.index + m[1].length))) {
+      const head = raw.slice(0, m.index + m[1].length);
+      if (target.test(head)) {
         written = true;
-      } else if (!harmless) {
+      } else if (!input.test(head) && !harmless) {
         return false; // used by a command that could put something else there
       }
     }
